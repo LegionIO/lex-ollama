@@ -29,6 +29,10 @@ module Legion
         def client(**override)
           super(**@opts, **override)
         end
+
+        def streaming_client(**override)
+          super(**@opts, **override)
+        end
       end
     end
   end

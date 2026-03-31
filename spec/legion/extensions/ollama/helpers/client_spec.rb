@@ -34,6 +34,27 @@ RSpec.describe Legion::Extensions::Ollama::Helpers::Client do
     end
   end
 
+  describe '#streaming_client' do
+    it 'returns a Faraday connection' do
+      expect(instance.streaming_client).to be_a(Faraday::Connection)
+    end
+
+    it 'defaults to localhost:11434' do
+      conn = instance.streaming_client
+      expect(conn.url_prefix.to_s).to eq('http://localhost:11434/')
+    end
+
+    it 'accepts a custom host' do
+      conn = instance.streaming_client(host: 'http://remote-server:11434')
+      expect(conn.url_prefix.to_s).to eq('http://remote-server:11434/')
+    end
+
+    it 'sets a 300 second timeout' do
+      conn = instance.streaming_client
+      expect(conn.options.timeout).to eq(300)
+    end
+  end
+
   describe 'DEFAULT_HOST' do
     it 'is http://localhost:11434' do
       expect(Legion::Extensions::Ollama::Helpers::Client::DEFAULT_HOST).to eq('http://localhost:11434')

@@ -18,6 +18,15 @@ module Legion
               conn.options.open_timeout = 10
             end
           end
+
+          def streaming_client(host: DEFAULT_HOST, **)
+            Faraday.new(url: host) do |conn|
+              conn.request :json
+              conn.headers['Content-Type'] = 'application/json'
+              conn.options.timeout = 300
+              conn.options.open_timeout = 10
+            end
+          end
         end
       end
     end

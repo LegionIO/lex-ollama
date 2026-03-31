@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'legion/extensions/ollama/helpers/client'
+require 'legion/extensions/ollama/helpers/errors'
 
 module Legion
   module Extensions
@@ -10,7 +11,7 @@ module Legion
           extend Legion::Extensions::Ollama::Helpers::Client
 
           def server_version(**)
-            response = client(**).get('/api/version')
+            response = Helpers::Errors.with_retry { client(**).get('/api/version') }
             { result: response.body, status: response.status }
           end
 

@@ -30,9 +30,27 @@ RSpec.describe Legion::Extensions::Ollama::Client do
     end
   end
 
+  describe '#streaming_client' do
+    it 'returns a Faraday connection' do
+      expect(client.streaming_client).to be_a(Faraday::Connection)
+    end
+
+    it 'uses the configured host' do
+      conn = client.streaming_client
+      expect(conn.url_prefix.to_s).to eq('http://localhost:11434/')
+    end
+
+    it 'allows host override' do
+      conn = client.streaming_client(host: 'http://other:11434')
+      expect(conn.url_prefix.to_s).to eq('http://other:11434/')
+    end
+  end
+
   describe 'runner inclusion' do
     it { is_expected.to respond_to(:generate) }
+    it { is_expected.to respond_to(:generate_stream) }
     it { is_expected.to respond_to(:chat) }
+    it { is_expected.to respond_to(:chat_stream) }
     it { is_expected.to respond_to(:create_model) }
     it { is_expected.to respond_to(:list_models) }
     it { is_expected.to respond_to(:show_model) }

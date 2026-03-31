@@ -12,9 +12,11 @@ gem install lex-ollama
 
 ### Completions
 - `generate` - Generate a text completion (POST /api/generate)
+- `generate_stream` - Stream a text completion with per-chunk callbacks
 
 ### Chat
 - `chat` - Generate a chat completion with message history and tool support (POST /api/chat)
+- `chat_stream` - Stream a chat completion with per-chunk callbacks
 
 ### Models
 - `create_model` - Create a model from another model, GGUF, or safetensors (POST /api/create)
@@ -54,6 +56,27 @@ result = client.embed(model: 'all-minilm', input: 'Some text to embed')
 
 # List models
 result = client.list_models
+
+# Streaming generate
+client.generate_stream(model: 'llama3.2', prompt: 'Tell me a story') do |event|
+  case event[:type]
+  when :delta then print event[:text]
+  when :done  then puts "\nDone!"
+  end
+end
+
+# Streaming chat
+client.chat_stream(model: 'llama3.2', messages: [{ role: 'user', content: 'Hello!' }]) do |event|
+  print event[:text] if event[:type] == :delta
+end
+```
+
+All API calls include automatic retry with exponential backoff on connection failures and timeouts.
+
+Generate and chat responses include standardized `usage:` data:
+```ruby
+result = client.generate(model: 'llama3.2', prompt: 'Hello')
+result[:usage]  # => { input_tokens: 1, output_tokens: 5, total_duration: ..., ... }
 ```
 
 ## Requirements

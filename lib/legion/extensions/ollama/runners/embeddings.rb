@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'legion/extensions/ollama/helpers/client'
+require 'legion/extensions/ollama/helpers/errors'
 
 module Legion
   module Extensions
@@ -12,7 +13,7 @@ module Legion
           def embed(model:, input:, truncate: nil, options: nil, keep_alive: nil, dimensions: nil, **)
             body = { model: model, input: input, truncate: truncate, options: options,
                      keep_alive: keep_alive, dimensions: dimensions }.compact
-            response = client(**).post('/api/embed', body)
+            response = Helpers::Errors.with_retry { client(**).post('/api/embed', body) }
             { result: response.body, status: response.status }
           end
 
