@@ -3,12 +3,16 @@
 require 'json'
 require 'fileutils'
 require 'legion/extensions/s3/client'
+require 'legion/extensions/ollama/helpers/client'
+require 'legion/extensions/ollama/helpers/errors'
 
 module Legion
   module Extensions
     module Ollama
       module Runners
         module S3Models
+          extend Legion::Extensions::Ollama::Helpers::Client
+
           OLLAMA_REGISTRY_PREFIX = 'manifests/registry.ollama.ai/library'
 
           def list_s3_models(bucket:, prefix: 'ollama/models', **s3_opts)

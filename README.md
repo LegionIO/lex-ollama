@@ -38,7 +38,7 @@ gem install lex-ollama
 ### S3 Model Distribution
 - `list_s3_models` - List models available in an S3 mirror
 - `import_from_s3` - Download model from S3 directly to Ollama's filesystem (works before Ollama starts)
-- `sync_from_s3` - Download model from S3 and push blobs through Ollama's API
+- `sync_from_s3` - Download model from S3, push blobs through Ollama's API, write manifest to filesystem
 - `import_default_models` - Import a list of models from S3 (fleet provisioning)
 
 ### Version
