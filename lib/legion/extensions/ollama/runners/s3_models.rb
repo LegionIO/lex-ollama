@@ -2,6 +2,7 @@
 
 require 'json'
 require 'fileutils'
+require 'tempfile'
 require 'legion/extensions/s3/client'
 require 'legion/extensions/ollama/helpers/client'
 require 'legion/extensions/ollama/helpers/errors'
@@ -61,10 +62,8 @@ module Legion
                 next
               end
 
-              blob_key  = "#{prefix}/blobs/#{blob_filename}"
-              blob_resp = s3.get_object(bucket: bucket, key: blob_key)
               FileUtils.mkdir_p(File.dirname(local_path))
-              File.binwrite(local_path, blob_resp[:body])
+              stream_s3_to_file(s3, bucket: bucket, key: "#{prefix}/blobs/#{blob_filename}", target: local_path)
               blobs_downloaded += 1
             end
 
@@ -95,6 +94,7 @@ module Legion
 
             blobs_pushed = 0
             blobs_skipped = 0
+            errors = []
 
             digests.each do |digest|
               if check_blob(digest: digest, **ollama_opts)[:result]
@@ -103,10 +103,22 @@ module Legion
               end
 
               blob_filename = digest.sub(':', '-')
-              blob_resp = s3.get_object(bucket: bucket, key: "#{prefix}/blobs/#{blob_filename}")
-              push_blob(digest: digest, body: blob_resp[:body], **ollama_opts)
-              blobs_pushed += 1
+              tempfile = Tempfile.new(['ollama_blob_', blob_filename], binmode: true)
+              begin
+                stream_s3_to_file(s3, bucket: bucket, key: "#{prefix}/blobs/#{blob_filename}", target: tempfile.path)
+                result = push_blob(digest: digest, body: File.binread(tempfile.path), **ollama_opts)
+                unless result[:result]
+                  errors << { digest: digest, status: result[:status] }
+                  next
+                end
+                blobs_pushed += 1
+              ensure
+                tempfile.close
+                tempfile.unlink
+              end
             end
+
+            return { result: false, model: model_ref, errors: errors, status: 500 } if errors.any?
 
             manifest_path = File.join(path, 'manifests', 'registry.ollama.ai', 'library', name, tag)
             FileUtils.mkdir_p(File.dirname(manifest_path))
@@ -137,6 +149,10 @@ module Legion
           def parse_model_ref(model)
             parts = model.split(':')
             { name: parts[0], tag: parts[1] || 'latest' }
+          end
+
+          def stream_s3_to_file(s3_inst, bucket:, key:, target:)
+            s3_inst.s3_client.get_object(bucket: bucket, key: key, response_target: target)
           end
 
           include Legion::Extensions::Helpers::Lex if Legion::Extensions.const_defined?(:Helpers) &&

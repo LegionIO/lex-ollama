@@ -9,6 +9,8 @@
 - `sync_from_s3` for Ollama API-based model import (push_blob + manifest write)
 - `import_default_models` convenience method for fleet provisioning
 - Runtime dependency on `lex-s3` for S3 operations
+- Streaming S3 downloads via `response_target` to avoid loading multi-GB blobs into memory
+- Error propagation in `sync_from_s3` — returns failure with error details when blob push fails
 
 ## [0.2.0] - 2026-03-31
 

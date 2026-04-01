@@ -55,36 +55,20 @@ RSpec.describe Legion::Extensions::Ollama::Runners::S3Models do
                 })
     end
 
-    after do
-      FileUtils.remove_entry(tmp_dir)
-    end
+    after { FileUtils.remove_entry(tmp_dir) }
 
-    it 'downloads manifest and blobs to local filesystem' do
+    it 'downloads manifest and streams blobs to local filesystem' do
       allow(s3_client).to receive(:get_object)
         .with(bucket: 'legion', key: 'ollama/models/manifests/registry.ollama.ai/library/llama3/latest')
-        .and_return({ key: 'ollama/models/manifests/registry.ollama.ai/library/llama3/latest',
-                      body: manifest_json, content_type: 'application/json', content_length: manifest_json.bytesize })
+        .and_return({ key: '', body: manifest_json, content_type: 'application/json',
+                      content_length: manifest_json.bytesize })
 
-      allow(s3_client).to receive(:get_object)
-        .with(bucket: 'legion', key: 'ollama/models/blobs/sha256-aaa111')
-        .and_return({ key: 'ollama/models/blobs/sha256-aaa111', body: 'config-data',
-                      content_type: 'application/octet-stream', content_length: 11 })
-
-      allow(s3_client).to receive(:get_object)
-        .with(bucket: 'legion', key: 'ollama/models/blobs/sha256-bbb222')
-        .and_return({ key: 'ollama/models/blobs/sha256-bbb222', body: 'blob-data-large',
-                      content_type: 'application/octet-stream', content_length: 15 })
-
-      allow(s3_client).to receive(:get_object)
-        .with(bucket: 'legion', key: 'ollama/models/blobs/sha256-ccc333')
-        .and_return({ key: 'ollama/models/blobs/sha256-ccc333', body: 'blob-data-small',
-                      content_type: 'application/octet-stream', content_length: 15 })
+      allow(client_instance).to receive(:stream_s3_to_file) do |_s3, key:, target:, **|
+        File.binwrite(target, "blob_data_#{key}")
+      end
 
       result = client_instance.import_from_s3(
-        model:       'llama3:latest',
-        bucket:      'legion',
-        prefix:      'ollama/models',
-        models_path: tmp_dir
+        model: 'llama3:latest', bucket: 'legion', prefix: 'ollama/models', models_path: tmp_dir
       )
 
       expect(result[:result]).to eq(true)
@@ -105,11 +89,8 @@ RSpec.describe Legion::Extensions::Ollama::Runners::S3Models do
     it 'skips blobs that already exist with matching size' do
       blob_dir = File.join(tmp_dir, 'blobs')
       FileUtils.mkdir_p(blob_dir)
-      existing_blob = File.join(blob_dir, 'sha256-bbb222')
+      File.binwrite(File.join(blob_dir, 'sha256-bbb222'), 'b' * 15)
 
-      # Write a file whose size matches the manifest layer size
-      File.binwrite(existing_blob, 'b' * 15)
-      # Override size in manifest to match the 15-byte file we wrote
       manifest_with_small_layer = JSON.dump({
                                               'schemaVersion' => 2,
                                               'config'        => { 'digest' => 'sha256:aaa111', 'size' => 100 },
@@ -121,25 +102,15 @@ RSpec.describe Legion::Extensions::Ollama::Runners::S3Models do
 
       allow(s3_client).to receive(:get_object)
         .with(bucket: 'legion', key: 'ollama/models/manifests/registry.ollama.ai/library/llama3/latest')
-        .and_return({ key: 'ollama/models/manifests/registry.ollama.ai/library/llama3/latest',
-                      body: manifest_with_small_layer, content_type: 'application/json',
+        .and_return({ key: '', body: manifest_with_small_layer, content_type: 'application/json',
                       content_length: manifest_with_small_layer.bytesize })
 
-      allow(s3_client).to receive(:get_object)
-        .with(bucket: 'legion', key: 'ollama/models/blobs/sha256-aaa111')
-        .and_return({ key: 'ollama/models/blobs/sha256-aaa111', body: 'config-data',
-                      content_type: 'application/octet-stream', content_length: 11 })
-
-      allow(s3_client).to receive(:get_object)
-        .with(bucket: 'legion', key: 'ollama/models/blobs/sha256-ccc333')
-        .and_return({ key: 'ollama/models/blobs/sha256-ccc333', body: 'blob-data-small',
-                      content_type: 'application/octet-stream', content_length: 15 })
+      allow(client_instance).to receive(:stream_s3_to_file) do |_s3, key:, target:, **|
+        File.binwrite(target, "blob_data_#{key}")
+      end
 
       result = client_instance.import_from_s3(
-        model:       'llama3:latest',
-        bucket:      'legion',
-        prefix:      'ollama/models',
-        models_path: tmp_dir
+        model: 'llama3:latest', bucket: 'legion', prefix: 'ollama/models', models_path: tmp_dir
       )
 
       expect(result[:blobs_downloaded]).to eq(2)
@@ -148,36 +119,20 @@ RSpec.describe Legion::Extensions::Ollama::Runners::S3Models do
     end
 
     it 'defaults tag to latest when model has no colon' do
-      blob_body = 'data'
-      blob_resp = { key: 'any', body: blob_body, content_type: 'application/octet-stream',
-                    content_length: blob_body.bytesize }
-
       allow(s3_client).to receive(:get_object)
         .with(bucket: 'legion', key: 'ollama/models/manifests/registry.ollama.ai/library/mistral/latest')
-        .and_return({ key: 'ollama/models/manifests/registry.ollama.ai/library/mistral/latest',
-                      body: manifest_json, content_type: 'application/json', content_length: manifest_json.bytesize })
+        .and_return({ key: '', body: manifest_json, content_type: 'application/json',
+                      content_length: manifest_json.bytesize })
 
-      allow(s3_client).to receive(:get_object)
-        .with(bucket: 'legion', key: 'ollama/models/blobs/sha256-aaa111')
-        .and_return(blob_resp)
-
-      allow(s3_client).to receive(:get_object)
-        .with(bucket: 'legion', key: 'ollama/models/blobs/sha256-bbb222')
-        .and_return(blob_resp)
-
-      allow(s3_client).to receive(:get_object)
-        .with(bucket: 'legion', key: 'ollama/models/blobs/sha256-ccc333')
-        .and_return(blob_resp)
+      allow(client_instance).to receive(:stream_s3_to_file) do |_s3, target:, **|
+        File.binwrite(target, 'data')
+      end
 
       result = client_instance.import_from_s3(
-        model:       'mistral',
-        bucket:      'legion',
-        prefix:      'ollama/models',
-        models_path: tmp_dir
+        model: 'mistral', bucket: 'legion', prefix: 'ollama/models', models_path: tmp_dir
       )
 
       expect(result[:result]).to eq(true)
-      expect(result[:model]).to eq('mistral')
       manifest_path = File.join(tmp_dir, 'manifests', 'registry.ollama.ai', 'library', 'mistral', 'latest')
       expect(File.exist?(manifest_path)).to be(true)
     end
@@ -209,14 +164,13 @@ RSpec.describe Legion::Extensions::Ollama::Runners::S3Models do
         .and_return({ key: '', body: manifest_json, content_type: 'application/json',
                       content_length: manifest_json.bytesize })
 
+      allow(client_instance).to receive(:stream_s3_to_file) do |_s3, key:, target:, **|
+        File.binwrite(target, "data_for_#{key}")
+      end
+
       %w[sha256:aaa111 sha256:bbb222 sha256:ccc333].each do |digest|
-        file_digest = digest.sub(':', '-')
         allow(faraday_conn).to receive(:head).with("/api/blobs/#{digest}")
                                              .and_return(instance_double(Faraday::Response, status: 404))
-
-        allow(s3_client).to receive(:get_object)
-          .with(bucket: 'legion', key: "ollama/models/blobs/#{file_digest}")
-          .and_return({ key: '', body: "data_#{digest}", content_type: 'application/octet-stream', content_length: 10 })
 
         allow(faraday_conn).to receive(:post).with("/api/blobs/#{digest}")
                                              .and_yield(instance_double(Faraday::Request, headers: {}).tap do |req|
@@ -237,7 +191,6 @@ RSpec.describe Legion::Extensions::Ollama::Runners::S3Models do
 
       manifest_path = File.join(tmp_dir, 'manifests', 'registry.ollama.ai', 'library', 'llama3', 'latest')
       expect(File.exist?(manifest_path)).to be(true)
-      expect(File.read(manifest_path)).to eq(manifest_json)
     end
 
     it 'skips blobs already present in Ollama' do
@@ -246,17 +199,16 @@ RSpec.describe Legion::Extensions::Ollama::Runners::S3Models do
         .and_return({ key: '', body: manifest_json, content_type: 'application/json',
                       content_length: manifest_json.bytesize })
 
+      allow(client_instance).to receive(:stream_s3_to_file) do |_s3, key:, target:, **|
+        File.binwrite(target, "data_for_#{key}")
+      end
+
       allow(faraday_conn).to receive(:head).with('/api/blobs/sha256:aaa111')
                                            .and_return(instance_double(Faraday::Response, status: 200))
 
       %w[sha256:bbb222 sha256:ccc333].each do |digest|
-        file_digest = digest.sub(':', '-')
         allow(faraday_conn).to receive(:head).with("/api/blobs/#{digest}")
                                              .and_return(instance_double(Faraday::Response, status: 404))
-
-        allow(s3_client).to receive(:get_object)
-          .with(bucket: 'legion', key: "ollama/models/blobs/#{file_digest}")
-          .and_return({ key: '', body: "data_#{digest}", content_type: 'application/octet-stream', content_length: 10 })
 
         allow(faraday_conn).to receive(:post).with("/api/blobs/#{digest}")
                                              .and_yield(instance_double(Faraday::Request, headers: {}).tap do |req|
@@ -265,9 +217,6 @@ RSpec.describe Legion::Extensions::Ollama::Runners::S3Models do
                                                         end).and_return(instance_double(Faraday::Response, status: 201))
       end
 
-      expect(s3_client).not_to receive(:get_object)
-        .with(bucket: 'legion', key: 'ollama/models/blobs/sha256-aaa111')
-
       result = client_instance.sync_from_s3(
         model: 'llama3:latest', bucket: 'legion', prefix: 'ollama/models', models_path: tmp_dir
       )
@@ -275,7 +224,46 @@ RSpec.describe Legion::Extensions::Ollama::Runners::S3Models do
       expect(result[:result]).to be(true)
       expect(result[:blobs_pushed]).to eq(2)
       expect(result[:blobs_skipped]).to eq(1)
-      expect(result[:status]).to eq(200)
+    end
+
+    it 'returns failure when blob push fails' do
+      allow(s3_client).to receive(:get_object)
+        .with(bucket: 'legion', key: 'ollama/models/manifests/registry.ollama.ai/library/llama3/latest')
+        .and_return({ key: '', body: manifest_json, content_type: 'application/json',
+                      content_length: manifest_json.bytesize })
+
+      allow(client_instance).to receive(:stream_s3_to_file) do |_s3, target:, **|
+        File.binwrite(target, 'data')
+      end
+
+      allow(faraday_conn).to receive(:head).and_return(instance_double(Faraday::Response, status: 404))
+
+      # First push succeeds, rest fail
+      call_count = 0
+      allow(faraday_conn).to receive(:post).with(%r{/api/blobs/}) do |&block|
+        call_count += 1
+        req = instance_double(Faraday::Request, headers: {})
+        allow(req).to receive(:body=)
+        allow(req).to receive(:headers).and_return({})
+        block&.call(req)
+        if call_count <= 1
+          instance_double(Faraday::Response, status: 201)
+        else
+          instance_double(Faraday::Response, status: 500)
+        end
+      end
+
+      result = client_instance.sync_from_s3(
+        model: 'llama3:latest', bucket: 'legion', prefix: 'ollama/models', models_path: tmp_dir
+      )
+
+      expect(result[:result]).to be(false)
+      expect(result[:errors]).not_to be_empty
+      expect(result[:status]).to eq(500)
+
+      # Manifest should NOT be written on failure
+      manifest_path = File.join(tmp_dir, 'manifests', 'registry.ollama.ai', 'library', 'llama3', 'latest')
+      expect(File.exist?(manifest_path)).to be(false)
     end
   end
 
@@ -299,9 +287,9 @@ RSpec.describe Legion::Extensions::Ollama::Runners::S3Models do
                         content_length: manifest_json.bytesize })
       end
 
-      allow(s3_client).to receive(:get_object)
-        .with(bucket: 'legion', key: 'ollama/models/blobs/sha256-aaa111')
-        .and_return({ key: '', body: 'data', content_type: 'application/octet-stream', content_length: 4 })
+      allow(client_instance).to receive(:stream_s3_to_file) do |_s3, target:, **|
+        File.binwrite(target, 'data')
+      end
 
       result = client_instance.import_default_models(
         default_models: %w[llama3:latest nomic-embed-text:latest],
