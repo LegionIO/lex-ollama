@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'json'
+require 'fileutils'
 require 'legion/extensions/s3/client'
 
 module Legion
@@ -23,6 +25,51 @@ module Legion
             end
 
             { models: models, status: 200 }
+          end
+
+          def import_from_s3(model:, bucket:, prefix: 'ollama/models', models_path: nil, **s3_opts)
+            s3 = s3_model_client(**s3_opts)
+            path = models_path || default_models_path
+            ref = parse_model_ref(model)
+            name = ref[:name]
+            tag  = ref[:tag]
+
+            manifest_key = "#{prefix}/#{OLLAMA_REGISTRY_PREFIX}/#{name}/#{tag}"
+            manifest_resp = s3.get_object(bucket: bucket, key: manifest_key)
+            manifest_body = manifest_resp[:body]
+            manifest_data = JSON.parse(manifest_body)
+
+            digests = []
+            digests << manifest_data['config'].slice('digest', 'size')
+            digests.concat(manifest_data['layers'].map { |l| l.slice('digest', 'size') })
+
+            blobs_downloaded = 0
+            blobs_skipped    = 0
+
+            digests.each do |entry|
+              digest = entry['digest']
+              expected_size = entry['size']
+              blob_filename = digest.sub(':', '-')
+              local_path    = File.join(path, 'blobs', blob_filename)
+
+              if File.exist?(local_path) && File.size(local_path) == expected_size
+                blobs_skipped += 1
+                next
+              end
+
+              blob_key  = "#{prefix}/blobs/#{blob_filename}"
+              blob_resp = s3.get_object(bucket: bucket, key: blob_key)
+              FileUtils.mkdir_p(File.dirname(local_path))
+              File.binwrite(local_path, blob_resp[:body])
+              blobs_downloaded += 1
+            end
+
+            manifest_path = File.join(path, 'manifests', 'registry.ollama.ai', 'library', name, tag)
+            FileUtils.mkdir_p(File.dirname(manifest_path))
+            File.binwrite(manifest_path, manifest_body)
+
+            { result: true, model: model, blobs_downloaded: blobs_downloaded, blobs_skipped: blobs_skipped,
+              status: 200 }
           end
 
           private
