@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require 'digest'
 require 'json'
 require 'fileutils'
 require 'tempfile'
@@ -15,6 +16,8 @@ module Legion
           extend Legion::Extensions::Ollama::Helpers::Client
 
           OLLAMA_REGISTRY_PREFIX = 'manifests/registry.ollama.ai/library'
+
+          class DigestMismatchError < StandardError; end
 
           def list_s3_models(bucket:, prefix: 'ollama/models', **s3_opts)
             s3 = s3_model_client(**s3_opts)
@@ -53,17 +56,18 @@ module Legion
 
             digests.each do |entry|
               digest = entry['digest']
-              expected_size = entry['size']
+              expected_hex = extract_hex(digest)
               blob_filename = digest.sub(':', '-')
               local_path    = File.join(path, 'blobs', blob_filename)
 
-              if File.exist?(local_path) && File.size(local_path) == expected_size
+              if File.exist?(local_path) && verify_digest(local_path, expected_hex)
                 blobs_skipped += 1
                 next
               end
 
               FileUtils.mkdir_p(File.dirname(local_path))
-              stream_s3_to_file(s3, bucket: bucket, key: "#{prefix}/blobs/#{blob_filename}", target: local_path)
+              download_and_verify_blob(s3, bucket: bucket, key: "#{prefix}/blobs/#{blob_filename}",
+                                           target: local_path, expected_hex: expected_hex)
               blobs_downloaded += 1
             end
 
@@ -102,10 +106,15 @@ module Legion
                 next
               end
 
+              expected_hex = extract_hex(digest)
               blob_filename = digest.sub(':', '-')
               tempfile = Tempfile.new(['ollama_blob_', blob_filename], binmode: true)
               begin
                 stream_s3_to_file(s3, bucket: bucket, key: "#{prefix}/blobs/#{blob_filename}", target: tempfile.path)
+                unless verify_digest(tempfile.path, expected_hex)
+                  errors << { digest: digest, error: 'digest mismatch' }
+                  next
+                end
                 result = push_blob(digest: digest, body: File.binread(tempfile.path), **ollama_opts)
                 unless result[:result]
                   errors << { digest: digest, status: result[:status] }
@@ -151,8 +160,29 @@ module Legion
             { name: parts[0], tag: parts[1] || 'latest' }
           end
 
+          def extract_hex(digest)
+            digest.split(':').last
+          end
+
+          def verify_digest(file_path, expected_hex)
+            Digest::SHA256.file(file_path).hexdigest == expected_hex
+          end
+
           def stream_s3_to_file(s3_inst, bucket:, key:, target:)
             s3_inst.s3_client.get_object(bucket: bucket, key: key, response_target: target)
+          end
+
+          def download_and_verify_blob(s3_inst, bucket:, key:, target:, expected_hex:)
+            tmpfile = "#{target}.tmp"
+            begin
+              stream_s3_to_file(s3_inst, bucket: bucket, key: key, target: tmpfile)
+              raise DigestMismatchError, "digest mismatch for #{key}: expected sha256:#{expected_hex}" unless verify_digest(tmpfile, expected_hex)
+
+              File.rename(tmpfile, target)
+            rescue StandardError
+              FileUtils.rm_f(tmpfile)
+              raise
+            end
           end
 
           include Legion::Extensions::Helpers::Lex if Legion::Extensions.const_defined?(:Helpers) &&
