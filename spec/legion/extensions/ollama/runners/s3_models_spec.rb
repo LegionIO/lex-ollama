@@ -212,17 +212,17 @@ RSpec.describe Legion::Extensions::Ollama::Runners::S3Models do
       %w[sha256:aaa111 sha256:bbb222 sha256:ccc333].each do |digest|
         file_digest = digest.sub(':', '-')
         allow(faraday_conn).to receive(:head).with("/api/blobs/#{digest}")
-          .and_return(instance_double(Faraday::Response, status: 404))
+                                             .and_return(instance_double(Faraday::Response, status: 404))
 
         allow(s3_client).to receive(:get_object)
           .with(bucket: 'legion', key: "ollama/models/blobs/#{file_digest}")
           .and_return({ key: '', body: "data_#{digest}", content_type: 'application/octet-stream', content_length: 10 })
 
         allow(faraday_conn).to receive(:post).with("/api/blobs/#{digest}")
-          .and_yield(instance_double(Faraday::Request, headers: {}).tap do |req|
-            allow(req).to receive(:body=)
-            allow(req).to receive(:headers).and_return({})
-          end).and_return(instance_double(Faraday::Response, status: 201))
+                                             .and_yield(instance_double(Faraday::Request, headers: {}).tap do |req|
+                                                          allow(req).to receive(:body=)
+                                                          allow(req).to receive(:headers).and_return({})
+                                                        end).and_return(instance_double(Faraday::Response, status: 201))
       end
 
       result = client_instance.sync_from_s3(
@@ -247,22 +247,22 @@ RSpec.describe Legion::Extensions::Ollama::Runners::S3Models do
                       content_length: manifest_json.bytesize })
 
       allow(faraday_conn).to receive(:head).with('/api/blobs/sha256:aaa111')
-        .and_return(instance_double(Faraday::Response, status: 200))
+                                           .and_return(instance_double(Faraday::Response, status: 200))
 
       %w[sha256:bbb222 sha256:ccc333].each do |digest|
         file_digest = digest.sub(':', '-')
         allow(faraday_conn).to receive(:head).with("/api/blobs/#{digest}")
-          .and_return(instance_double(Faraday::Response, status: 404))
+                                             .and_return(instance_double(Faraday::Response, status: 404))
 
         allow(s3_client).to receive(:get_object)
           .with(bucket: 'legion', key: "ollama/models/blobs/#{file_digest}")
           .and_return({ key: '', body: "data_#{digest}", content_type: 'application/octet-stream', content_length: 10 })
 
         allow(faraday_conn).to receive(:post).with("/api/blobs/#{digest}")
-          .and_yield(instance_double(Faraday::Request, headers: {}).tap do |req|
-            allow(req).to receive(:body=)
-            allow(req).to receive(:headers).and_return({})
-          end).and_return(instance_double(Faraday::Response, status: 201))
+                                             .and_yield(instance_double(Faraday::Request, headers: {}).tap do |req|
+                                                          allow(req).to receive(:body=)
+                                                          allow(req).to receive(:headers).and_return({})
+                                                        end).and_return(instance_double(Faraday::Response, status: 201))
       end
 
       expect(s3_client).not_to receive(:get_object)
@@ -305,8 +305,8 @@ RSpec.describe Legion::Extensions::Ollama::Runners::S3Models do
 
       result = client_instance.import_default_models(
         default_models: %w[llama3:latest nomic-embed-text:latest],
-        bucket: 'legion',
-        models_path: tmp_dir
+        bucket:         'legion',
+        models_path:    tmp_dir
       )
 
       expect(result[:result].length).to eq(2)

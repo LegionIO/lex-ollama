@@ -112,9 +112,9 @@ module Legion
               status: 200 }
           end
 
-          def import_default_models(default_models:, bucket:, **opts)
+          def import_default_models(default_models:, bucket:, **)
             results = default_models.map do |model|
-              import_from_s3(model: model, bucket: bucket, **opts)
+              import_from_s3(model: model, bucket: bucket, **)
             end
 
             { result: results, status: 200 }
