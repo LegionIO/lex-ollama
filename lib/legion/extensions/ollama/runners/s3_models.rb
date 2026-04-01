@@ -112,6 +112,14 @@ module Legion
               status: 200 }
           end
 
+          def import_default_models(default_models:, bucket:, **opts)
+            results = default_models.map do |model|
+              import_from_s3(model: model, bucket: bucket, **opts)
+            end
+
+            { result: results, status: 200 }
+          end
+
           private
 
           def default_models_path

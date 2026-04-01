@@ -278,4 +278,40 @@ RSpec.describe Legion::Extensions::Ollama::Runners::S3Models do
       expect(result[:status]).to eq(200)
     end
   end
+
+  describe '#import_default_models' do
+    let(:tmp_dir) { Dir.mktmpdir }
+    let(:manifest_json) do
+      JSON.dump({
+                  'schemaVersion' => 2,
+                  'config'        => { 'digest' => 'sha256:aaa111', 'size' => 4 },
+                  'layers'        => []
+                })
+    end
+
+    after { FileUtils.remove_entry(tmp_dir) }
+
+    it 'imports each model from the default_models list' do
+      %w[llama3 nomic-embed-text].each do |name|
+        allow(s3_client).to receive(:get_object)
+          .with(bucket: 'legion', key: "ollama/models/manifests/registry.ollama.ai/library/#{name}/latest")
+          .and_return({ key: '', body: manifest_json, content_type: 'application/json',
+                        content_length: manifest_json.bytesize })
+      end
+
+      allow(s3_client).to receive(:get_object)
+        .with(bucket: 'legion', key: 'ollama/models/blobs/sha256-aaa111')
+        .and_return({ key: '', body: 'data', content_type: 'application/octet-stream', content_length: 4 })
+
+      result = client_instance.import_default_models(
+        default_models: %w[llama3:latest nomic-embed-text:latest],
+        bucket: 'legion',
+        models_path: tmp_dir
+      )
+
+      expect(result[:result].length).to eq(2)
+      expect(result[:result]).to all(include(result: true))
+      expect(result[:status]).to eq(200)
+    end
+  end
 end
