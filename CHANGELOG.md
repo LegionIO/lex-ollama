@@ -1,10 +1,5 @@
 # Changelog
 
-## [0.2.1] - 2026-04-01
-
-### Added
-- `Runners::S3Models#sync_from_s3` — downloads model manifest and blobs from S3, pushes missing blobs through the Ollama HTTP API (`check_blob` / `push_blob`), then registers the model with `create_model`
-
 ## [0.2.0] - 2026-03-31
 
 ### Added

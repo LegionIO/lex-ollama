@@ -72,11 +72,9 @@ module Legion
               status: 200 }
           end
 
-          def sync_from_s3(model:, bucket:, prefix: 'ollama/models', **opts)
-            host = opts.delete(:host)
+          def sync_from_s3(model:, bucket:, prefix: 'ollama/models', host: nil, models_path: nil, **s3_opts)
             ollama_opts = host ? { host: host } : {}
-            s3_opts = opts
-
+            path = models_path || default_models_path
             s3 = s3_model_client(**s3_opts)
             ref = parse_model_ref(model)
             name = ref[:name]
@@ -91,17 +89,27 @@ module Legion
             digests << manifest_data['config']['digest']
             digests.concat(manifest_data['layers'].map { |l| l['digest'] })
 
+            blobs_pushed = 0
+            blobs_skipped = 0
+
             digests.each do |digest|
-              next if check_blob(digest: digest, **ollama_opts)[:result]
+              if check_blob(digest: digest, **ollama_opts)[:result]
+                blobs_skipped += 1
+                next
+              end
 
               blob_filename = digest.sub(':', '-')
               blob_resp = s3.get_object(bucket: bucket, key: "#{prefix}/blobs/#{blob_filename}")
               push_blob(digest: digest, body: blob_resp[:body], **ollama_opts)
+              blobs_pushed += 1
             end
 
-            create_model(model: model_ref, from: model_ref, **ollama_opts)
+            manifest_path = File.join(path, 'manifests', 'registry.ollama.ai', 'library', name, tag)
+            FileUtils.mkdir_p(File.dirname(manifest_path))
+            File.binwrite(manifest_path, manifest_resp[:body])
 
-            { result: true, model: model_ref, status: 200 }
+            { result: true, model: model_ref, blobs_pushed: blobs_pushed, blobs_skipped: blobs_skipped,
+              status: 200 }
           end
 
           private
