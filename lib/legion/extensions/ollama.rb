@@ -9,6 +9,7 @@ require 'legion/extensions/ollama/runners/chat'
 require 'legion/extensions/ollama/runners/models'
 require 'legion/extensions/ollama/runners/embeddings'
 require 'legion/extensions/ollama/runners/blobs'
+require 'legion/extensions/ollama/runners/s3_models'
 require 'legion/extensions/ollama/runners/version'
 require 'legion/extensions/ollama/client'
 

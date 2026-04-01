@@ -6,6 +6,7 @@ require_relative 'runners/chat'
 require_relative 'runners/models'
 require_relative 'runners/embeddings'
 require_relative 'runners/blobs'
+require_relative 'runners/s3_models'
 require_relative 'runners/version'
 
 module Legion
@@ -18,6 +19,7 @@ module Legion
         include Runners::Models
         include Runners::Embeddings
         include Runners::Blobs
+        include Runners::S3Models
         include Runners::Version
 
         attr_reader :opts
