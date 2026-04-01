@@ -72,6 +72,38 @@ module Legion
               status: 200 }
           end
 
+          def sync_from_s3(model:, bucket:, prefix: 'ollama/models', **opts)
+            host = opts.delete(:host)
+            ollama_opts = host ? { host: host } : {}
+            s3_opts = opts
+
+            s3 = s3_model_client(**s3_opts)
+            ref = parse_model_ref(model)
+            name = ref[:name]
+            tag  = ref[:tag]
+            model_ref = "#{name}:#{tag}"
+
+            manifest_key = "#{prefix}/#{OLLAMA_REGISTRY_PREFIX}/#{name}/#{tag}"
+            manifest_resp = s3.get_object(bucket: bucket, key: manifest_key)
+            manifest_data = JSON.parse(manifest_resp[:body])
+
+            digests = []
+            digests << manifest_data['config']['digest']
+            digests.concat(manifest_data['layers'].map { |l| l['digest'] })
+
+            digests.each do |digest|
+              next if check_blob(digest: digest, **ollama_opts)[:result]
+
+              blob_filename = digest.sub(':', '-')
+              blob_resp = s3.get_object(bucket: bucket, key: "#{prefix}/blobs/#{blob_filename}")
+              push_blob(digest: digest, body: blob_resp[:body], **ollama_opts)
+            end
+
+            create_model(model: model_ref, from: model_ref, **ollama_opts)
+
+            { result: true, model: model_ref, status: 200 }
+          end
+
           private
 
           def default_models_path

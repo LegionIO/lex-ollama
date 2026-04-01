@@ -182,4 +182,113 @@ RSpec.describe Legion::Extensions::Ollama::Runners::S3Models do
       expect(File.exist?(manifest_path)).to be(true)
     end
   end
+
+  describe '#sync_from_s3' do
+    let(:faraday_conn) { instance_double(Faraday::Connection) }
+    let(:manifest_json) do
+      JSON.dump({
+                  'schemaVersion' => 2,
+                  'config'        => { 'digest' => 'sha256:aaa111', 'size' => 100 },
+                  'layers'        => [
+                    { 'digest' => 'sha256:bbb222', 'size' => 4_000_000_000 },
+                    { 'digest' => 'sha256:ccc333', 'size' => 512 }
+                  ]
+                })
+    end
+
+    before do
+      allow(client_instance).to receive(:client).and_return(faraday_conn)
+    end
+
+    it 'pushes blobs through Ollama API and creates model' do
+      allow(s3_client).to receive(:get_object)
+        .with(bucket: 'legion', key: 'ollama/models/manifests/registry.ollama.ai/library/llama3/latest')
+        .and_return({ key: 'ollama/models/manifests/registry.ollama.ai/library/llama3/latest',
+                      body: manifest_json, content_type: 'application/json', content_length: manifest_json.bytesize })
+
+      allow(s3_client).to receive(:get_object)
+        .with(bucket: 'legion', key: 'ollama/models/blobs/sha256-aaa111')
+        .and_return({ key: 'ollama/models/blobs/sha256-aaa111', body: 'config-data',
+                      content_type: 'application/octet-stream', content_length: 11 })
+
+      allow(s3_client).to receive(:get_object)
+        .with(bucket: 'legion', key: 'ollama/models/blobs/sha256-bbb222')
+        .and_return({ key: 'ollama/models/blobs/sha256-bbb222', body: 'blob-data-large',
+                      content_type: 'application/octet-stream', content_length: 15 })
+
+      allow(s3_client).to receive(:get_object)
+        .with(bucket: 'legion', key: 'ollama/models/blobs/sha256-ccc333')
+        .and_return({ key: 'ollama/models/blobs/sha256-ccc333', body: 'blob-data-small',
+                      content_type: 'application/octet-stream', content_length: 15 })
+
+      not_found = instance_double(Faraday::Response, status: 404)
+      allow(faraday_conn).to receive(:head).with('/api/blobs/sha256:aaa111').and_return(not_found)
+      allow(faraday_conn).to receive(:head).with('/api/blobs/sha256:bbb222').and_return(not_found)
+      allow(faraday_conn).to receive(:head).with('/api/blobs/sha256:ccc333').and_return(not_found)
+
+      push_response = instance_double(Faraday::Response, status: 201)
+      allow(faraday_conn).to receive(:post).with(%r{/api/blobs/}).and_yield(
+        instance_double(Faraday::Request, headers: {}).tap do |req|
+          allow(req).to receive(:body=)
+          allow(req).to receive(:headers).and_return({})
+        end
+      ).and_return(push_response)
+
+      create_response = instance_double(Faraday::Response, body: { 'status' => 'success' }, status: 200)
+      allow(faraday_conn).to receive(:post)
+        .with('/api/create', { model: 'llama3:latest', from: 'llama3:latest', stream: false })
+        .and_return(create_response)
+
+      result = client_instance.sync_from_s3(model: 'llama3:latest', bucket: 'legion', prefix: 'ollama/models')
+
+      expect(result[:result]).to be(true)
+      expect(result[:model]).to eq('llama3:latest')
+      expect(result[:status]).to eq(200)
+    end
+
+    it 'skips blobs already present in Ollama' do
+      allow(s3_client).to receive(:get_object)
+        .with(bucket: 'legion', key: 'ollama/models/manifests/registry.ollama.ai/library/llama3/latest')
+        .and_return({ key: 'ollama/models/manifests/registry.ollama.ai/library/llama3/latest',
+                      body: manifest_json, content_type: 'application/json', content_length: manifest_json.bytesize })
+
+      found = instance_double(Faraday::Response, status: 200)
+      not_found = instance_double(Faraday::Response, status: 404)
+
+      allow(faraday_conn).to receive(:head).with('/api/blobs/sha256:aaa111').and_return(found)
+      allow(faraday_conn).to receive(:head).with('/api/blobs/sha256:bbb222').and_return(not_found)
+      allow(faraday_conn).to receive(:head).with('/api/blobs/sha256:ccc333').and_return(not_found)
+
+      allow(s3_client).to receive(:get_object)
+        .with(bucket: 'legion', key: 'ollama/models/blobs/sha256-bbb222')
+        .and_return({ key: 'ollama/models/blobs/sha256-bbb222', body: 'blob-data-large',
+                      content_type: 'application/octet-stream', content_length: 15 })
+
+      allow(s3_client).to receive(:get_object)
+        .with(bucket: 'legion', key: 'ollama/models/blobs/sha256-ccc333')
+        .and_return({ key: 'ollama/models/blobs/sha256-ccc333', body: 'blob-data-small',
+                      content_type: 'application/octet-stream', content_length: 15 })
+
+      push_response = instance_double(Faraday::Response, status: 201)
+      allow(faraday_conn).to receive(:post).with(%r{/api/blobs/}).and_yield(
+        instance_double(Faraday::Request, headers: {}).tap do |req|
+          allow(req).to receive(:body=)
+          allow(req).to receive(:headers).and_return({})
+        end
+      ).and_return(push_response)
+
+      create_response = instance_double(Faraday::Response, body: { 'status' => 'success' }, status: 200)
+      allow(faraday_conn).to receive(:post)
+        .with('/api/create', { model: 'llama3:latest', from: 'llama3:latest', stream: false })
+        .and_return(create_response)
+
+      expect(s3_client).not_to receive(:get_object)
+        .with(bucket: 'legion', key: 'ollama/models/blobs/sha256-aaa111')
+
+      result = client_instance.sync_from_s3(model: 'llama3:latest', bucket: 'legion', prefix: 'ollama/models')
+
+      expect(result[:result]).to be(true)
+      expect(result[:status]).to eq(200)
+    end
+  end
 end
