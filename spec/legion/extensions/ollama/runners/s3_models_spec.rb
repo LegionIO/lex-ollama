@@ -106,7 +106,6 @@ RSpec.describe Legion::Extensions::Ollama::Runners::S3Models do
       blob_dir = File.join(tmp_dir, 'blobs')
       FileUtils.mkdir_p(blob_dir)
       existing_blob = File.join(blob_dir, 'sha256-bbb222')
-      # simulate size only via stub
 
       # Write a file whose size matches the manifest layer size
       File.binwrite(existing_blob, 'b' * 15)
