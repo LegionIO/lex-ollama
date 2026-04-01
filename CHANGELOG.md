@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.3.0] - 2026-04-01
+
+### Added
+- S3 model distribution via new `Runners::S3Models` module
+- `list_s3_models` to discover models available in an S3 mirror
+- `import_from_s3` for direct filesystem model import (works without Ollama running)
+- `sync_from_s3` for Ollama API-based model import (push_blob + manifest write)
+- `import_default_models` convenience method for fleet provisioning
+- Runtime dependency on `lex-s3` for S3 operations
+
 ## [0.2.0] - 2026-03-31
 
 ### Added
