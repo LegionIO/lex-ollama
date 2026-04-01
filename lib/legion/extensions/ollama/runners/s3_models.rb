@@ -1,29 +1,13 @@
 # frozen_string_literal: true
 
 require 'legion/extensions/s3/client'
-require 'legion/extensions/ollama/helpers/client'
 
 module Legion
   module Extensions
     module Ollama
       module Runners
         module S3Models
-          extend Legion::Extensions::Ollama::Helpers::Client
-
           OLLAMA_REGISTRY_PREFIX = 'manifests/registry.ollama.ai/library'
-
-          def default_models_path
-            ENV.fetch('OLLAMA_MODELS', File.join(Dir.home, '.ollama', 'models'))
-          end
-
-          def s3_model_client(**s3_opts)
-            Legion::Extensions::S3::Client.new(**s3_opts)
-          end
-
-          def parse_model_ref(model)
-            parts = model.split(':')
-            { name: parts[0], tag: parts[1] || 'latest' }
-          end
 
           def list_s3_models(bucket:, prefix: 'ollama/models', **s3_opts)
             s3 = s3_model_client(**s3_opts)
@@ -39,6 +23,21 @@ module Legion
             end
 
             { models: models, status: 200 }
+          end
+
+          private
+
+          def default_models_path
+            ENV.fetch('OLLAMA_MODELS', File.join(Dir.home, '.ollama', 'models'))
+          end
+
+          def s3_model_client(**s3_opts)
+            Legion::Extensions::S3::Client.new(**s3_opts)
+          end
+
+          def parse_model_ref(model)
+            parts = model.split(':')
+            { name: parts[0], tag: parts[1] || 'latest' }
           end
 
           include Legion::Extensions::Helpers::Lex if Legion::Extensions.const_defined?(:Helpers) &&
