@@ -35,6 +35,12 @@ gem install lex-ollama
 - `check_blob` - Check if a blob exists on the server (HEAD /api/blobs/:digest)
 - `push_blob` - Upload a binary blob to the server (POST /api/blobs/:digest)
 
+### S3 Model Distribution
+- `list_s3_models` - List models available in an S3 mirror
+- `import_from_s3` - Download model from S3 directly to Ollama's filesystem (works before Ollama starts)
+- `sync_from_s3` - Download model from S3, push blobs through Ollama's API, write manifest to filesystem
+- `import_default_models` - Import a list of models from S3 (fleet provisioning)
+
 ### Version
 - `server_version` - Retrieve the Ollama server version (GET /api/version)
 
@@ -70,6 +76,34 @@ client.chat_stream(model: 'llama3.2', messages: [{ role: 'user', content: 'Hello
   print event[:text] if event[:type] == :delta
 end
 ```
+
+## S3 Model Distribution
+
+Pull models from an internal S3 mirror instead of the public Ollama registry:
+
+```ruby
+client = Legion::Extensions::Ollama::Client.new
+
+# List available models in S3
+client.list_s3_models(bucket: 'legion', endpoint: 'https://mesh.s3api-core.optum.com')
+
+# Import directly to filesystem (works without Ollama running)
+client.import_from_s3(model: 'llama3:latest', bucket: 'legion',
+                      endpoint: 'https://mesh.s3api-core.optum.com')
+
+# Push through Ollama API (requires Ollama running)
+client.sync_from_s3(model: 'llama3:latest', bucket: 'legion',
+                    endpoint: 'https://mesh.s3api-core.optum.com')
+
+# Provision fleet with default models
+client.import_default_models(
+  default_models: %w[llama3:latest nomic-embed-text:latest],
+  bucket: 'legion',
+  endpoint: 'https://mesh.s3api-core.optum.com'
+)
+```
+
+S3 operations use [lex-s3](https://github.com/LegionIO/lex-s3). The S3 bucket should mirror the Ollama models directory structure (`manifests/` and `blobs/` under the configured prefix).
 
 All API calls include automatic retry with exponential backoff on connection failures and timeouts.
 

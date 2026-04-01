@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.3.0] - 2026-04-01
+
+### Added
+- S3 model distribution via new `Runners::S3Models` module
+- `list_s3_models` to discover models available in an S3 mirror
+- `import_from_s3` for direct filesystem model import (works without Ollama running)
+- `sync_from_s3` for Ollama API-based model import (push_blob + manifest write)
+- `import_default_models` convenience method for fleet provisioning
+- Runtime dependency on `lex-s3` for S3 operations
+- Streaming S3 downloads via `response_target` to avoid loading multi-GB blobs into memory
+- Error propagation in `sync_from_s3` — returns failure with error details when blob push fails
+- SHA256 digest verification for all downloaded blobs (import and sync paths)
+- Atomic blob writes via temp file + rename (prevents partial/corrupt blobs on failure)
+- Cache hits verified by SHA256 digest, not just file size — corrupted local blobs are re-downloaded
+- `DigestMismatchError` raised when S3 blob content does not match manifest digest
+
 ## [0.2.0] - 2026-03-31
 
 ### Added

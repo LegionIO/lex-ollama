@@ -62,6 +62,10 @@ RSpec.describe Legion::Extensions::Ollama::Client do
     it { is_expected.to respond_to(:embed) }
     it { is_expected.to respond_to(:check_blob) }
     it { is_expected.to respond_to(:push_blob) }
+    it { is_expected.to respond_to(:list_s3_models) }
+    it { is_expected.to respond_to(:import_from_s3) }
+    it { is_expected.to respond_to(:sync_from_s3) }
+    it { is_expected.to respond_to(:import_default_models) }
     it { is_expected.to respond_to(:server_version) }
   end
 end
