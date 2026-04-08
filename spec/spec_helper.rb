@@ -1,7 +1,17 @@
 # frozen_string_literal: true
 
 require 'bundler/setup'
-require 'legion/transport'
+begin
+  require 'legion/transport'
+rescue LoadError
+  module Legion
+    module Transport
+      def self.const_missing(name)
+        const_set(name, Class.new)
+      end
+    end
+  end
+end
 
 # ---------------------------------------------------------------------------
 # Stub Legion::Extensions constants not present without a full Legion runtime.

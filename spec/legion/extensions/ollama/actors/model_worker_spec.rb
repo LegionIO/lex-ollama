@@ -43,33 +43,36 @@ RSpec.describe Legion::Extensions::Ollama::Actor::ModelWorker do
       w
     end
 
-    it 'injects request_type when absent from the message' do
-      # Simulate what the parent process_message would return
-      base_msg = { input: 'hello' }
-      allow(worker).to receive(:process_message).and_call_original
-      # Call the enrichment logic directly since we can't easily stub super
-      msg = base_msg.dup
-      msg[:request_type] ||= worker.request_type
-      msg[:model]        ||= worker.model_name
-      expect(msg[:request_type]).to eq('embed')
-    end
+    it 'injects request_type and model when absent from the parent message' do
+      allow_any_instance_of(worker_class.superclass)
+        .to receive(:process_message)
+        .and_return({ input: 'hello' })
 
-    it 'injects model when absent from the message' do
-      msg = { input: 'hello' }
-      msg[:model] ||= worker.model_name
+      msg = worker.process_message({ input: 'hello' }, {}, {})
+
+      expect(msg[:request_type]).to eq('embed')
       expect(msg[:model]).to eq('nomic-embed-text')
     end
 
     it 'does not override request_type if already set by sender' do
-      msg = { request_type: 'chat', model: 'other' }
-      msg[:request_type] ||= worker.request_type
-      msg[:model]        ||= worker.model_name
+      allow_any_instance_of(worker_class.superclass)
+        .to receive(:process_message)
+        .and_return({ input: 'hello', request_type: 'chat', model: 'other' })
+
+      msg = worker.process_message({ input: 'hello', request_type: 'chat', model: 'other' }, {}, {})
+
       expect(msg[:request_type]).to eq('chat')
+      expect(msg[:model]).to eq('other')
     end
 
     it 'does not override model if already set by sender' do
-      msg = { model: 'mxbai-embed-large' }
-      msg[:model] ||= worker.model_name
+      allow_any_instance_of(worker_class.superclass)
+        .to receive(:process_message)
+        .and_return({ input: 'hello', model: 'mxbai-embed-large' })
+
+      msg = worker.process_message({ input: 'hello', model: 'mxbai-embed-large' }, {}, {})
+
+      expect(msg[:request_type]).to eq('embed')
       expect(msg[:model]).to eq('mxbai-embed-large')
     end
   end

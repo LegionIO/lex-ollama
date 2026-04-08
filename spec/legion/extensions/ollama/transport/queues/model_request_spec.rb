@@ -34,8 +34,7 @@ RSpec.describe Legion::Extensions::Ollama::Transport::Queues::ModelRequest do
     it 'converts colons to dots in the model name' do
       instance = queue_class.allocate
       instance.instance_variable_set(:@request_type, 'chat')
-      # Simulate what #initialize does via sanitise_model
-      instance.instance_variable_set(:@model, 'qwen3.5.27b')
+      instance.instance_variable_set(:@model, instance.send(:sanitise_model, 'qwen3.5:27b'))
       expect(instance.queue_name).to eq('llm.request.ollama.chat.qwen3.5.27b')
     end
 

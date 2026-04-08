@@ -28,7 +28,8 @@ module Legion
 
             private
 
-            # Colons are not legal in AMQP topic word separators; convert to dots.
+            # Project convention: use dots as the only word separator in routing keys
+            # so queue names stay visually consistent (dots are the AMQP topic separator).
             # e.g. "qwen3.5:27b" → "qwen3.5.27b"
             def sanitise_model(name)
               name.to_s.tr(':', '.')

@@ -1,8 +1,8 @@
 # lex-ollama: Ollama Integration for LegionIO
 
 **Repository Level 3 Documentation**
-- **Parent**: `/Users/miverso2/rubymine/legion/extensions-ai/CLAUDE.md`
-- **Grandparent**: `/Users/miverso2/rubymine/legion/CLAUDE.md`
+- **Parent**: `../CLAUDE.md`
+- **Grandparent**: `../../CLAUDE.md`
 
 ## Purpose
 
@@ -12,7 +12,7 @@ reporting, and **fleet queue subscription** for receiving routed LLM requests fr
 
 **GitHub**: https://github.com/LegionIO/lex-ollama
 **License**: MIT
-**Version**: 0.3.0
+**Version**: 0.3.1
 **Specs**: 82 examples (12 spec files) — fleet additions add ~35 more
 
 ---
