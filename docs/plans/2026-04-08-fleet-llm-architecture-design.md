@@ -27,7 +27,7 @@ The current fleet architecture in lex-llm-gateway funnels all LLM requests throu
 4. Consumer priority so dedicated GPUs are preferred over opportunistic laptop workers
 5. Message priority so user-facing requests jump ahead of batch jobs
 6. Clean decomposition: legion-llm owns schemas/dispatch/metering-emission, extensions own consumption/persistence
-7. Fleet workers only need lex-ollama + legion-transport — no full Legion runtime required
+7. Fleet workers only need lex-ollama + legion-transport + legion-llm — no full Legion runtime required
 
 ---
 
@@ -316,6 +316,29 @@ Definition:
 Higher priority (200) overrides base (100). Provider policies set appropriate TTLs and
 queue depths based on the workload characteristics of each provider.
 
+### Ledger Queue Policies (metering + audit)
+
+```
+Name:       ledger-metering
+Pattern:    ^llm\.metering\.
+Priority:   100
+Apply to:   queues
+Definition:
+  max-length:      100000        # bounded depth under sustained ledger downtime
+  overflow:        drop-head     # drop oldest metering events, not newest
+
+Name:       ledger-audit
+Pattern:    ^llm\.audit\.
+Priority:   100
+Apply to:   queues
+Definition:
+  max-length:      50000         # bounded depth
+  overflow:        reject-publish  # audit records must not be silently dropped
+```
+
+Metering uses `drop-head` (lose oldest events rather than block publishers). Audit uses
+`reject-publish` (compliance records must not be silently discarded — publisher spools to disk).
+
 When message TTL expires, the message is simply dropped (no DLX). The client-side timeout
 on the requesting node handles the failure. TTL exists primarily to prevent stale messages
 from accumulating if a queue persists with no consumers (the auto-delete + non-empty race).
@@ -407,7 +430,7 @@ not wait behind 500 background batch embedding jobs.
 ### Priority Levels
 
 ```
-Priority 9-10:  Reserved (system/emergency)
+Priority 9:     Critical (system/emergency, escalation, killswitch)
 Priority 7-8:   User-facing, interactive (agent chat, real-time embed)
 Priority 4-6:   Normal operational (scheduled tasks, pipeline steps)
 Priority 1-3:   Background batch (bulk embedding, offline analysis)
@@ -865,7 +888,7 @@ legion:
 
 Dedicated fleet worker. Subscribes to all models it has loaded.
 Does not run lex-llm-ledger (no DB access needed).
-Only needs: lex-ollama + legion-transport.
+Needs: lex-ollama + legion-transport + legion-llm (for fleet message classes).
 
 ### Mac Studio (Dedicated)
 
@@ -991,6 +1014,62 @@ Does not run fleet workers.
 
 7. **Consumer priority values**: Should there be a standard scale, or is per-deployment
    configuration sufficient? Standard: GPU server = 10, Mac Studio = 5, laptop = 1.
+
+8. **S3 sync + fleet traffic race**: When `sync_from_s3` is running on a GPU worker (pulling
+   blobs through the Ollama API), fleet requests for that model may arrive concurrently.
+   Ollama may return 404 or 500 for a partially-synced model. Should workers pause their
+   queue subscription during model sync? Drain queue first?
+
+9. **Classification enforcement**: The classification system labels requests (`internal`,
+   `restricted`, `public`) but enforcement is not yet implemented at the fleet layer. A
+   request with `classification.level: :restricted` (on-premise only) could be routed to a
+   Bedrock fleet worker if the Router selects Bedrock as the provider. Workers do not check
+   classification before executing. This is a compliance gap.
+
+10. **Conversation lifecycle**: Who generates `conversation_id`? The UI, the pipeline entry
+    point, or `ConversationStore`? When is a conversation considered closed? What triggers
+    `session_only` retention cleanup? What happens to orphaned `conversation_id` values when
+    the requesting node crashes with in-flight requests?
+
+11. **Reply queue orphan**: If the requesting process dies after publishing a fleet request
+    but before consuming the reply, the reply queue auto-deletes. The worker's computation
+    is lost — tokens burned, no metering emitted. Worker-side metering (see #4) would
+    partially mitigate this.
+
+12. **Priority + reject-publish interaction**: `reject-publish` fires when the queue is at
+    `max-length`, regardless of the incoming message's priority. A high-priority real-time
+    request can be nack'd because the queue is full of low-priority batch jobs. RabbitMQ
+    does not evict low-priority messages to make room for high-priority ones. The Router's
+    tier fallback handles this (nack → try direct), but batch-heavy workloads may push
+    real-time traffic to cloud APIs more often than expected.
+
+13. **ReplyDispatcher channel model**: The design uses one shared AMQP channel with
+    `confirm_select` for all fleet publishes. A channel-level exception (malformed message,
+    connection drop) would cancel ALL pending futures simultaneously. Should the dispatcher
+    use a dedicated channel, or one channel per N concurrent requests?
+
+---
+
+## Known Limitations (v1)
+
+### Streaming Over Fleet Bus
+
+Fleet requests enforce `stream: false`. Streaming chunks over AMQP require a new message
+type, multi-delivery correlation, and ReplyDispatcher changes. Deferred to v2. Workers
+reject `stream: true` requests with error code `unsupported_streaming`.
+
+### Queue Priority and Backpressure
+
+`x-max-priority` enables priority ordering within the queue, but `overflow: reject-publish`
+does not consider priority — it rejects any publish when the queue is at `max-length`.
+High-priority messages are not exempt from backpressure rejection.
+
+### x-max-priority Must Be a Queue Argument
+
+For classic auto-delete queues, `x-max-priority` must be set as a queue argument at
+declaration time, not via RabbitMQ policy. Workers declare queues with
+`arguments: { 'x-max-priority' => 10 }`. Policies still handle `max-length`, `overflow`,
+and `message-ttl`.
 
 ---
 

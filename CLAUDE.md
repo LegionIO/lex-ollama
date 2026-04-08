@@ -111,7 +111,7 @@ The extension spawns one `Actor::ModelWorker` per subscription entry at boot.
 Publisher (legion-llm Fleet::Dispatcher / any fleet node)
   │  routing_key: "llm.request.ollama.embed.nomic-embed-text"
   │  AMQP type: 'llm.fleet.request'
-  │  Body includes: message_context { conversation_id, message_id, request_id, exchange_id }
+  │  Body includes: message_context { conversation_id, message_id, parent_message_id, message_seq, request_id, exchange_id }
   ▼
 Exchange: llm.request  [topic, durable]
   │
@@ -192,8 +192,9 @@ platform-wide standard, and per-message-type specifications.
 | `faraday` >= 2.0 | HTTP client for Ollama REST API |
 | `lex-s3` >= 0.2 | S3 model distribution operations |
 
-Fleet transport requires Legion runtime gems (`legion-transport`, `LegionIO`) but those are *not*
-gemspec dependencies — they are expected to be present in the runtime environment.
+Fleet transport requires Legion runtime gems (`legion-transport`, `legion-llm`, `LegionIO`) but
+those are *not* gemspec dependencies — they are expected to be present in the runtime environment.
+`legion-llm` is needed for fleet message classes (`Legion::LLM::Fleet::Request`, etc.).
 
 ---
 

@@ -76,8 +76,8 @@ lex-ollama (and future provider extensions) subscribe to model-specific queues.
                |  )                        |                        |         v                     |
                |        |                  |                        |  Runners::Fleet               |
                |        v                  |                        |    #handle_request            |
-               |  lex-llm-gateway          |                        |         |                     |
-               |  Runners::Fleet           |                        |         v                     |
+               |  legion-llm               |                        |         |                     |
+               |  Fleet::Dispatcher        |                        |         v                     |
                |    signs JWT              |                        |  Ollama::Client.chat(         |
                |    generates corr_id      |                        |    model: 'qwen3.5:27b')     |
                |    builds routing key:    |                        |    (direct HTTP to Ollama)    |
@@ -102,7 +102,7 @@ lex-ollama (and future provider extensions) subscribe to model-specific queues.
           |       |    .qwen3.5.27b                  |              |    (future) lex-openai        |
           |       |                                  |              |                               |
           |       +---> Queue: llm.request.ollama    |              |  ModelWorker actor (chat,     |
-          |       |       .chat.qwen3.5.27b [quorum] | ----------> |    gpt-4o)                    |
+          |       |       .chat.qwen3.5.27b [classic, auto-delete] | ----------> |    gpt-4o)                    |
           |       |                                  |              +-------------------------------+
           |       |  llm.request.ollama.embed
           |       |    .nomic-embed-text              |
@@ -246,7 +246,7 @@ When two Mac Studios both serve `llama3.2` chat, they compete on the same queue:
                               +-------------------------------+
                               |  Queue: llm.request.ollama    |
                               |    .chat.llama3.2             |
-                              |  (quorum, durable)            |
+                              |  (classic, auto-delete)            |
                               +-------------------------------+
                                     /                 \
                                    /   round-robin     \
@@ -311,7 +311,7 @@ arriving back in the agent's memory.
     |     - model 'nomic-embed-text' -> provider = 'ollama'
     |
     v
-  lex-llm-gateway  Runners::Fleet.dispatch()
+  legion-llm  Fleet::Dispatcher.dispatch()
     |
     |  4. Build request envelope:
     |     {
@@ -320,7 +320,7 @@ arriving back in the agent's memory.
     |       text:           '...',              # embed payload
     |       messages:       nil,                # not a chat request
     |       reply_to:       'llm.fleet.reply.a3f8c1',  # this node's reply queue
-    |       correlation_id: 'fleet_b7e2d4...',
+    |       correlation_id: 'req_b7e2d4...',
     |       signed_token:   '<JWT, 60s TTL>'    # (if auth enabled)
     |     }
     |
@@ -329,7 +329,7 @@ arriving back in the agent's memory.
     |     -> "llm.request.ollama.embed.nomic-embed-text"
     |
     |  6. Register correlation_id in ReplyDispatcher:
-    |     Concurrent::Map: 'fleet_b7e2d4...' -> ResolvableFuture
+    |     Concurrent::Map: 'req_b7e2d4...' -> ResolvableFuture
     |
     |  7. Ensure reply consumer is running:
     |     ReplyDispatcher.ensure_consumer()
@@ -345,7 +345,7 @@ arriving back in the agent's memory.
     |    properties:                                                           |
     |      content_type:  'application/json'                                   |
     |      reply_to:      'llm.fleet.reply.a3f8c1'                             |
-    |      correlation_id: 'fleet_b7e2d4...'                                   |
+    |      correlation_id: 'req_b7e2d4...'                                   |
     |    body: JSON envelope from step 4                                       |
     |                                                                          v
     |
@@ -361,7 +361,7 @@ arriving back in the agent's memory.
     |                                    |
     |                                    v
     |                          Queue: llm.request.ollama.embed.nomic-embed-text
-    |                            type: quorum, durable: true
+    |                            type: classic, auto_delete: true
     |                            consumers: 2 (Mac Studio #1 and #2)
     |                                    |
     |                                    | round-robin dispatch
@@ -418,7 +418,7 @@ arriving back in the agent's memory.
     |                                    v                                     |
     |                          14. Build reply envelope:                       |
     |                              {                                           |
-    |                                correlation_id: 'fleet_b7e2d4...',        |
+    |                                correlation_id: 'req_b7e2d4...',        |
     |                                response: { embeddings: [[...]] },        |
     |                                input_tokens: 128,                        |
     |                                output_tokens: 0,                         |
@@ -430,7 +430,7 @@ arriving back in the agent's memory.
     |                          15. AMQP publish reply:                         |
     |                              exchange: '' (default)                      |
     |                              routing_key: 'llm.fleet.reply.a3f8c1'       |
-    |                              correlation_id: 'fleet_b7e2d4...'           |
+    |                              correlation_id: 'req_b7e2d4...'           |
     |                              body: JSON from step 14                     |
     |                                    |                                     |
     |                                    v                                     |
@@ -454,16 +454,16 @@ arriving back in the agent's memory.
   AGENT NODE (continued)
   ======================
 
-  lex-llm-gateway  ReplyDispatcher
+  legion-llm  Fleet::ReplyDispatcher
     |
     |  17. on_delivery callback fires:
     |      - decode JSON
-    |      - lookup correlation_id 'fleet_b7e2d4...' in Concurrent::Map
+    |      - lookup correlation_id 'req_b7e2d4...' in Concurrent::Map
     |      - fulfill future with response hash
     |      - delete from map
     |
     v
-  lex-llm-gateway  Runners::Fleet.dispatch() (resumed)
+  legion-llm  Fleet::Dispatcher (resumed)
     |
     |  18. future.value!(30) returns:
     |      { correlation_id: '...', response: { embeddings: [[...]] }, ... }
@@ -471,7 +471,7 @@ arriving back in the agent's memory.
     |  19. Deregister correlation_id from ReplyDispatcher (ensure block)
     |
     v
-  lex-llm-gateway  Runners::Inference (if called through gateway)
+  legion-llm  (metering + audit emission)
     |
     |  20. Metering.publish_or_spool():
     |      {
@@ -509,7 +509,7 @@ arriving back in the agent's memory.
   DB NODE
   =======
 
-  lex-llm-gateway  MeteringWriter actor
+  lex-llm-ledger  MeteringWriter actor
     |
     |  23. Consumes metering event from llm.metering.write queue
     |      - estimates cost_usd (local model = $0.00)
@@ -523,7 +523,7 @@ arriving back in the agent's memory.
 - Five process boundaries are crossed: Agent -> RabbitMQ -> GPU Worker -> Ollama -> back through RabbitMQ -> Agent.
 - The reply path uses AMQP's default exchange (direct routing by queue name), not the `llm.request` topic exchange.
 - Metering happens on the requesting node after the response arrives, not on the GPU worker.
-- The GPU worker only needs `lex-ollama` + `legion-transport`. No `legion-llm`, no `legion-data`, no DB.
+- The GPU worker needs `lex-ollama` + `legion-transport` + `legion-llm` (for fleet message classes). No `legion-data`, no DB.
 
 
 ## 7. Same Flow, Every Scenario: What Actually Changes
@@ -553,7 +553,7 @@ reply correlation, metering) stays exactly the same.
   ==================================================
 
     Routing key:    llm.request.ollama.embed.nomic-embed-text
-    Queue:          llm.request.ollama.embed.nomic-embed-text  [quorum]
+    Queue:          llm.request.ollama.embed.nomic-embed-text  [classic, auto-delete]
     Runner:         Ollama::Client#embed(model: 'nomic-embed-text', input: '...')
     Ollama HTTP:    POST /api/embed  { "model": "nomic-embed-text", "input": "..." }
     Response:       { "embeddings": [[0.012, -0.437, ...]], "prompt_eval_count": 128 }
@@ -572,7 +572,7 @@ reply correlation, metering) stays exactly the same.
   =============================================
 
     Routing key:    llm.request.ollama.chat.qwen3.5.27b
-    Queue:          llm.request.ollama.chat.qwen3.5.27b  [quorum]
+    Queue:          llm.request.ollama.chat.qwen3.5.27b  [classic, auto-delete]
     Runner:         Ollama::Client#chat(model: 'qwen3.5:27b', messages: [...])
     Ollama HTTP:    POST /api/chat  { "model": "qwen3.5:27b", "messages": [...] }
     Response:       { "message": { "content": "..." }, "eval_count": 512, ... }
@@ -594,7 +594,7 @@ reply correlation, metering) stays exactly the same.
   ========================================================
 
     Routing key:    llm.request.ollama.embed.mxbai-embed-large
-    Queue:          llm.request.ollama.embed.mxbai-embed-large  [quorum]
+    Queue:          llm.request.ollama.embed.mxbai-embed-large  [classic, auto-delete]
     Runner:         Ollama::Client#embed(model: 'mxbai-embed-large', input: '...')
     Ollama HTTP:    POST /api/embed  { "model": "mxbai-embed-large", "input": "..." }
     Response:       { "embeddings": [[0.023, -0.891, ...]], "prompt_eval_count": 128 }
@@ -616,7 +616,7 @@ reply correlation, metering) stays exactly the same.
   ==================================================
 
     Routing key:    llm.request.ollama.chat.qwen3.5.27b
-    Queue:          llm.request.ollama.chat.qwen3.5.27b  [quorum]
+    Queue:          llm.request.ollama.chat.qwen3.5.27b  [classic, auto-delete]
     Runner:         Ollama::Client#chat(model: 'qwen3.5:27b', messages: [...])
     Ollama HTTP:    POST /api/chat  { "model": "qwen3.5:27b", "messages": [...] }
     Response:       { "message": { "content": "..." }, "eval_count": 512, ... }
@@ -639,7 +639,7 @@ reply correlation, metering) stays exactly the same.
   ======================================================
 
     Routing key:    llm.request.ollama.generate.llama3.2
-    Queue:          llm.request.ollama.generate.llama3.2  [quorum]
+    Queue:          llm.request.ollama.generate.llama3.2  [classic, auto-delete]
     Runner:         Ollama::Client#generate(model: 'llama3.2', prompt: '...')
     Ollama HTTP:    POST /api/generate  { "model": "llama3.2", "prompt": "..." }
     Response:       { "response": "...", "eval_count": 256, ... }
@@ -951,7 +951,7 @@ reply correlation, metering) stays exactly the same.
     └──────────────────────────────────────────────────┘
 
     Priority scale:
-      9-10  Reserved (system/emergency)
+      9     Critical (system/emergency)
       7-8   User-facing, interactive (agent chat, real-time)
       4-6   Normal operational (pipelines, scheduled tasks)
       1-3   Background batch (bulk embedding, offline)

@@ -53,7 +53,7 @@ LLM fleet messages are one instance of this standard, not a special case.
 | `content_type` | `'application/json'` — always JSON. Never varies per-message-type. | Serialization hint |
 | `content_encoding` | `'identity'` \| `'gzip'` \| `'encrypted/cs'` — consumers need this BEFORE parsing the body. | Compression/encryption hint |
 | `type` | Dotted namespace: `<domain>.<category>.<action>`. Consumers dispatch on this without parsing the body. RabbitMQ preserves it through DLX. Legacy messages use flat strings (`task`, `heartbeat`); new messages use dotted. | Message type dispatch |
-| `message_id` | Sender's unique ID for THIS message. Format: `<prefix>_<uuid>`. NOT task_id (that goes in headers). Globally unique. Enables deduplication on redelivery. | Deduplication |
+| `message_id` | Sender's unique ID for THIS message. Format: `<prefix>_<uuid>`. NOT task_id (that goes in headers). Globally unique. Aspirational: enables deduplication on redelivery (no consumer-side enforcement yet — redelivered messages may be processed twice). | Deduplication |
 | `correlation_id` | Links a REPLY to its REQUEST (RPC pattern). Set by requester, copied verbatim onto reply. NOT for business-level correlation (use header `x-legion-trace-correlation-id`). NOT for task chain linking (use header `parent_id`). | Reply matching |
 | `reply_to` | Queue name where sender listens for replies. Only set on messages that expect a reply. Replier uses this as routing key on the default exchange `''`. | RPC reply routing |
 | `priority` | 0-9 integer. Queue must have `x-max-priority` set. Platform-wide scale (see below). | Queue ordering |
@@ -270,9 +270,12 @@ module Legion
   module LLM
     module Transport
       class Message < ::Legion::Transport::Message
+        # Keys stripped from the JSON body (in addition to base ENVELOPE_KEYS).
+        # Do NOT add keys already in ENVELOPE_KEYS (:routing_key, :reply_to, etc.).
+        # Do NOT add :request_type — metering/audit need it in the body.
         LLM_ENVELOPE_KEYS = %i[
-          message_context routing_key reply_to fleet_correlation_id
-          request_type provider model priority ttl
+          message_context fleet_correlation_id
+          provider model priority ttl
         ].freeze
 
         def message_context
@@ -287,6 +290,8 @@ module Legion
           @options[:message_id] || "#{message_id_prefix}_#{SecureRandom.uuid}"
         end
 
+        # Fleet messages use :fleet_correlation_id to avoid collision with the
+        # base class's :correlation_id (which falls through to :parent_id/:task_id).
         def correlation_id
           @options[:fleet_correlation_id] || super
         end
@@ -297,6 +302,12 @@ module Legion
 
         def headers
           super.merge(llm_headers).merge(context_headers)
+        end
+
+        # Subclasses override to inject OpenTelemetry span context.
+        # Stub returns empty hash until tracing integration is implemented.
+        def tracing_headers
+          {}
         end
 
         private
@@ -614,7 +625,7 @@ need the full classification read the body; compliance middleware only reads hea
 | `expiration` | nil | Replies should be consumed immediately |
 | `timestamp` | unix epoch | |
 | `user_id` | connection user | |
-| `app_id` | `'lex-ollama'` | Worker's component identity |
+| `app_id` | `'lex-ollama'` (or worker's gem name) | Worker's component identity (injected by caller, not hardcoded) |
 
 ### Headers
 
@@ -1375,7 +1386,7 @@ x-legion-identity-*               yes      yes       yes    yes       yes     ye
 x-legion-llm-provider             yes      yes       yes    yes       yes     yes
 x-legion-llm-model                yes      yes       yes    yes       yes     yes
 x-legion-llm-request-type         yes      yes       yes    yes       yes     yes
-x-legion-llm-schema-version       yes      yes       —      yes       yes     yes
+x-legion-llm-schema-version       yes      yes       yes    yes       yes     yes
 x-legion-llm-conversation-id      yes      yes       yes    yes       yes     yes
 x-legion-llm-message-id           yes      yes       yes    yes       yes     yes
 x-legion-llm-request-id           yes      yes       yes    yes       yes     yes
@@ -1415,14 +1426,20 @@ exchange_id             yes       yes       yes       yes       yes       yes
 
 ### Legion::LLM::Transport::Message (LLM Base)
 
+**Prerequisite**: This class does not exist yet. It must be implemented in `legion-llm`
+as a Day-0 deliverable before any fleet message subclass can be written.
+
 ```ruby
 module Legion
   module LLM
     module Transport
       class Message < ::Legion::Transport::Message
+        # Keys stripped from the JSON body (in addition to base ENVELOPE_KEYS).
+        # Do NOT add keys already in ENVELOPE_KEYS (:routing_key, :reply_to, etc.).
+        # Do NOT add :request_type — metering/audit need it in the body.
         LLM_ENVELOPE_KEYS = %i[
-          message_context routing_key reply_to fleet_correlation_id
-          request_type provider model priority ttl
+          message_context fleet_correlation_id
+          provider model priority ttl
         ].freeze
 
         def message_context
@@ -1437,6 +1454,10 @@ module Legion
           @options[:message_id] || "#{message_id_prefix}_#{SecureRandom.uuid}"
         end
 
+        # Fleet messages use :fleet_correlation_id to avoid collision with the
+        # base class's :correlation_id (which falls through to :parent_id/:task_id).
+        # Callers constructing fleet replies MUST pass fleet_correlation_id:, not
+        # correlation_id:, to ensure the RPC reply matcher receives the correct value.
         def correlation_id
           @options[:fleet_correlation_id] || super
         end
@@ -1447,6 +1468,12 @@ module Legion
 
         def headers
           super.merge(llm_headers).merge(context_headers)
+        end
+
+        # Subclasses override to inject OpenTelemetry span context.
+        # Stub returns empty hash until tracing integration is implemented.
+        def tracing_headers
+          {}
         end
 
         private
@@ -1504,13 +1531,36 @@ module Legion
 
       class Response < Legion::LLM::Transport::Message
         def type           = 'llm.fleet.response'
-        def exchange       = nil  # default exchange
         def routing_key    = @options[:reply_to]
         def priority       = 0
-        def app_id         = @options[:app_id] || 'lex-ollama'
+
+        # app_id defaults to 'legion-llm' (from base). Callers MUST inject
+        # their extension name: Fleet::Response.new(app_id: 'lex-ollama', ...)
+        # This class lives in legion-llm and cannot hardcode a provider name.
 
         def headers
           super.merge(tracing_headers)
+        end
+
+        # Override publish to use the AMQP default exchange ('').
+        # The base class's publish method calls exchange.publish(...), but the
+        # default exchange is accessed via channel.default_exchange in Bunny,
+        # not via a named exchange class. Returning nil from #exchange would
+        # cause NoMethodError in the base class.
+        def publish(options = @options)
+          raise unless @valid
+
+          channel.default_exchange.publish(
+            encode_message,
+            routing_key:      routing_key,
+            content_type:     options[:content_type] || content_type,
+            content_encoding: options[:content_encoding] || content_encoding,
+            type:             type,
+            priority:         priority,
+            message_id:       message_id,
+            correlation_id:   correlation_id,
+            timestamp:        timestamp
+          )
         end
 
         private
@@ -1520,13 +1570,34 @@ module Legion
 
       class Error < Legion::LLM::Transport::Message
         def type           = 'llm.fleet.error'
-        def exchange       = nil
         def routing_key    = @options[:reply_to]
         def priority       = 0
         def encrypt?       = false
 
+        # app_id defaults to 'legion-llm' (from base). Worker-generated errors
+        # MUST pass app_id: 'lex-ollama' (or 'lex-bedrock', etc.). Requester-
+        # generated errors (no_fleet_queue, fleet_backpressure, fleet_timeout)
+        # use the default 'legion-llm'.
+
         def headers
           super.merge(error_headers)
+        end
+
+        # Same default-exchange override as Fleet::Response (see above).
+        def publish(options = @options)
+          raise unless @valid
+
+          channel.default_exchange.publish(
+            encode_message,
+            routing_key:      routing_key,
+            content_type:     options[:content_type] || content_type,
+            content_encoding: options[:content_encoding] || content_encoding,
+            type:             type,
+            priority:         priority,
+            message_id:       message_id,
+            correlation_id:   correlation_id,
+            timestamp:        timestamp
+          )
         end
 
         private
@@ -1656,3 +1727,81 @@ All six message classes follow the same pattern: inherit `Legion::LLM::Transport
 override property methods, merge domain-specific headers via `super.merge(...)`, let
 `#message` strip envelope keys from the body. `message_context` is always present in the
 body and the context subset is always in headers — handled by the LLM base class.
+
+---
+
+## Implementation Prerequisites
+
+`Legion::LLM::Transport::Message` does not exist yet. It must be implemented in `legion-llm`
+as the first deliverable before any fleet message subclass can be tested end-to-end.
+
+**Day-0 deliverables (in legion-llm):**
+1. `Legion::LLM::Transport::Message` — the LLM base class (this doc is the spec)
+2. `Legion::LLM::Fleet::Exchange` — declares `llm.request` topic exchange
+3. `Legion::LLM::Fleet::Request`, `Response`, `Error` — fleet message classes
+4. `Legion::LLM::Metering::Exchange`, `Metering::Event` — metering classes
+5. `Legion::LLM::Audit::Exchange`, `Audit::PromptEvent`, `Audit::ToolEvent` — audit classes
+
+**Day-0 deliverables (in lex-ollama):**
+1. Update `Transport::Queues::ModelRequest` — change from quorum to classic + auto-delete,
+   add `'x-max-priority' => 10` as queue argument
+2. Update `Transport::Messages::LlmResponse` — inherit `Fleet::Response`
+3. `Runners::Fleet` — fleet request handler
+4. `Actor::ModelWorker` — subscription actor
+
+---
+
+## Scope Limitations (v1)
+
+### Streaming Over Fleet Bus
+
+Fleet requests enforce `stream: false` in v1. The wire protocol defines six message types,
+none of which is a streaming chunk. `generate_stream` and `chat_stream` are available for
+local Ollama HTTP calls but are **not supported** over the fleet AMQP bus.
+
+Supporting streaming would require:
+- A new message type for streaming chunks (`llm.fleet.chunk`?)
+- A mechanism for `message_context` propagation across N chunk messages
+- Changes to `ReplyDispatcher` to handle multiple deliveries per `correlation_id`
+- A "done" sentinel message to close the stream
+
+This is deferred to v2. Fleet requests that specify `stream: true` should be rejected
+by the worker with error code `unsupported_streaming` (retriable: no, category: validation).
+
+### Reply Queue Orphan (Publisher Dies Before Consuming Reply)
+
+If the requesting process dies after publishing a fleet request but before the reply
+arrives, the reply queue (`llm.fleet.reply.<hex>`) auto-deletes. The worker's reply
+publish silently fails (default exchange, no mandatory flag on replies). The computation
+is lost — tokens burned, no metering event emitted (metering happens on the requester).
+
+This is a known limitation. Mitigations for v2:
+- Worker-side metering emission (Open Question #4 in architecture doc)
+- Reply TTL so orphaned replies don't accumulate
+- Dead-letter exchange on reply queues for forensic analysis
+
+### Redelivery and exchange_id
+
+When a message is redelivered (`redelivered: true` in AMQP delivery info), the worker
+receives the same `message_context` including `exchange_id`. The current design copies
+`message_context` verbatim — redelivered messages produce metering/audit records with
+the same `exchange_id` as the original attempt.
+
+For v1, this is acceptable: duplicate `exchange_id` records are rare (only on worker crash
+mid-inference) and identifiable via the `redelivered` AMQP flag. For v2, workers should
+generate a new `exchange_id` when `redelivered: true` to distinguish retry attempts.
+
+---
+
+## Queue Type Decision
+
+Fleet request queues are **classic, auto-delete** (not quorum). This is a deliberate choice:
+
+- **auto-delete** enables `mandatory: true` publisher feedback — when all workers disconnect
+  and the queue drains, it is deleted, and new publishes get `basic.return` (~1ms)
+- **quorum queues cannot be auto-delete** — RabbitMQ rejects the combination
+- **classic queues** are sufficient because fleet queues are ephemeral by nature — messages
+  have short TTLs and workers recreate queues on reconnect
+- **`x-max-priority`** must be set as a queue argument at declaration time (not via policy)
+  for classic queues — workers declare queues with `arguments: { 'x-max-priority' => 10 }`
+- RabbitMQ policies still handle `max-length`, `overflow`, and `message-ttl` for classic queues
