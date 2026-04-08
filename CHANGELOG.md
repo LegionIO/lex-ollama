@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.3.1] - 2026-04-08
+
+### Added
+- `Runners::Fleet` — module-function dispatcher for inbound AMQP LLM request messages; routes by `request_type` to `Client#embed`, `Client#generate`, or `Client#chat`
+- `Transport::Exchanges::LlmRequest` — durable topic exchange `llm.request` for fleet routing
+- `Transport::Queues::ModelRequest` — parametric durable quorum queue per `(type, model)` pair; sanitises colons in model names to dots
+- `Transport::Messages::LlmResponse` — reply message published back to `reply_to` queue after inference
+- `Actor::ModelWorker` — subscription actor; one instance per configured `(type, model)` subscription; enriches inbound messages with `request_type` and `model`, bypasses Legion::Runner task DB (`use_runner? false`)
+- Fleet queue subscription system: when `Legion::Extensions::Core` is present, subscribes to model-scoped queues on `llm.request` topic exchange using routing key `llm.request.ollama.<type>.<model>`
+- Standalone mode: all transport/actor requires guarded behind `const_defined?(:Core, false)` so the gem works as a pure HTTP client library without AMQP
+
+### Fixed
+- `Runners::S3Models`: use `::JSON.parse` (stdlib) instead of bare `JSON.parse` which resolves to `Legion::JSON` (symbol keys) inside the `Legion::` namespace — fixes `import_from_s3` and `sync_from_s3` manifest parsing
+
 ## [0.3.0] - 2026-04-01
 
 ### Added
