@@ -119,6 +119,10 @@ result[:usage]  # => { input_tokens: 1, output_tokens: 5, total_duration: ..., .
 - [LegionIO](https://github.com/LegionIO/LegionIO) framework
 - [Ollama](https://ollama.com) running locally or on a remote host
 
+## Version
+
+0.3.0
+
 ## License
 
 MIT

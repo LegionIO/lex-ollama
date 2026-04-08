@@ -45,7 +45,7 @@ module Legion
             manifest_key = "#{prefix}/#{OLLAMA_REGISTRY_PREFIX}/#{name}/#{tag}"
             manifest_resp = s3.get_object(bucket: bucket, key: manifest_key)
             manifest_body = manifest_resp[:body]
-            manifest_data = JSON.parse(manifest_body)
+            manifest_data = ::JSON.parse(manifest_body)
 
             digests = []
             digests << manifest_data['config'].slice('digest', 'size')
@@ -90,7 +90,7 @@ module Legion
 
             manifest_key = "#{prefix}/#{OLLAMA_REGISTRY_PREFIX}/#{name}/#{tag}"
             manifest_resp = s3.get_object(bucket: bucket, key: manifest_key)
-            manifest_data = JSON.parse(manifest_resp[:body])
+            manifest_data = ::JSON.parse(manifest_resp[:body])
 
             digests = []
             digests << manifest_data['config']['digest']
