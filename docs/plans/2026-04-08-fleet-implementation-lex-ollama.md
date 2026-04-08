@@ -227,6 +227,14 @@ module Legion
               }
             end
 
+            # Disable dead-letter exchange provisioning. The base class
+            # default_options always adds x-dead-letter-exchange when
+            # dlx_enabled returns true. Fleet queues are ephemeral
+            # (auto-delete) and must not provision persistent DLX queues.
+            def dlx_enabled
+              false
+            end
+
             private
 
             def sanitise_model(name)
@@ -247,6 +255,7 @@ end
 | `#initialize` | `(request_type:, model:, **)` | `ModelRequest` | Sanitises model, calls `super` |
 | `#queue_name` | `()` | `String` | `"llm.request.ollama.#{type}.#{model}"` |
 | `#queue_options` | `()` | `Hash` | `{ durable: false, auto_delete: true, arguments: { 'x-max-priority' => 10 } }` |
+| `#dlx_enabled` | `()` | `false` | Disables dead-letter exchange provisioning (base class default is `true`) |
 | `#sanitise_model` (private) | `(name)` | `String` | Replaces `:` with `.` |
 
 ### Spec Changes

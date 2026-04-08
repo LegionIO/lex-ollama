@@ -273,9 +273,9 @@ module Legion
         # Keys stripped from the JSON body (in addition to base ENVELOPE_KEYS).
         # Do NOT add keys already in ENVELOPE_KEYS (:routing_key, :reply_to, etc.).
         # Do NOT add :request_type — metering/audit need it in the body.
+        # Do NOT add :message_context — it MUST appear in the body of all 6 messages.
         LLM_ENVELOPE_KEYS = %i[
-          message_context fleet_correlation_id
-          provider model priority ttl
+          fleet_correlation_id provider model ttl
         ].freeze
 
         def message_context
@@ -876,6 +876,7 @@ need the full classification read the body; compliance middleware only reads hea
 | `token_expired` | `auth` | no | JWT TTL exceeded |
 | `payload_too_large` | `validation` | no | Request body exceeds limit |
 | `unsupported_type` | `validation` | no | Unknown request_type |
+| `unsupported_streaming` | `validation` | no | `stream: true` not supported over fleet bus (v1) |
 | `no_fleet_queue` | `dispatch` | no | basic.return — no queue matched (self-generated) |
 | `fleet_backpressure` | `dispatch` | yes | basic.nack — queue full (self-generated) |
 | `fleet_timeout` | `dispatch` | yes | Client timeout — no reply (self-generated) |
@@ -1437,9 +1438,9 @@ module Legion
         # Keys stripped from the JSON body (in addition to base ENVELOPE_KEYS).
         # Do NOT add keys already in ENVELOPE_KEYS (:routing_key, :reply_to, etc.).
         # Do NOT add :request_type — metering/audit need it in the body.
+        # Do NOT add :message_context — it MUST appear in the body of all 6 messages.
         LLM_ENVELOPE_KEYS = %i[
-          message_context fleet_correlation_id
-          provider model priority ttl
+          fleet_correlation_id provider model ttl
         ].freeze
 
         def message_context
@@ -1550,6 +1551,7 @@ module Legion
         def publish(options = @options)
           raise unless @valid
 
+          validate_payload_size
           channel.default_exchange.publish(
             encode_message,
             routing_key:      routing_key,
@@ -1559,8 +1561,12 @@ module Legion
             priority:         priority,
             message_id:       message_id,
             correlation_id:   correlation_id,
+            app_id:           app_id,
             timestamp:        timestamp
           )
+        rescue Bunny::ConnectionClosedError, Bunny::ChannelAlreadyClosed,
+               Bunny::NetworkErrorWrapper, IOError, Timeout::Error => e
+          spool_message(e)
         end
 
         private
@@ -1580,7 +1586,7 @@ module Legion
         # use the default 'legion-llm'.
 
         def headers
-          super.merge(error_headers)
+          super.merge(error_headers).merge(tracing_headers)
         end
 
         # Same default-exchange override as Fleet::Response (see above).
@@ -1596,8 +1602,12 @@ module Legion
             priority:         priority,
             message_id:       message_id,
             correlation_id:   correlation_id,
+            app_id:           app_id,
             timestamp:        timestamp
           )
+        rescue Bunny::ConnectionClosedError, Bunny::ChannelAlreadyClosed,
+               Bunny::NetworkErrorWrapper, IOError, Timeout::Error => e
+          spool_message(e)
         end
 
         private

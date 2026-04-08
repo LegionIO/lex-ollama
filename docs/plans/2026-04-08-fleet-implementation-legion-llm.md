@@ -166,13 +166,14 @@ class Legion::LLM::Transport::Message < ::Legion::Transport::Message
 
 ```ruby
 LLM_ENVELOPE_KEYS = %i[
-  message_context fleet_correlation_id
-  provider model priority ttl
+  fleet_correlation_id provider model ttl
 ].freeze
 ```
 
 These keys are stripped from the JSON body (in addition to the base class's `ENVELOPE_KEYS`).
 Do NOT add `:request_type` here — metering and audit need it in the body.
+Do NOT add `:message_context` — it MUST appear in the body of all 6 messages.
+Do NOT add `:priority` — already in the base class's `ENVELOPE_KEYS`.
 
 **Public instance methods:**
 
@@ -211,10 +212,13 @@ rather than hard-coding the exchange name.
 
 ```ruby
 class Legion::LLM::Fleet::Exchange < ::Legion::Transport::Exchange
-  exchange_name 'llm.request'
-  exchange_type :topic
+  def exchange_name = 'llm.request'
+  def default_type  = 'topic'
 end
 ```
+
+**Note**: `Legion::Transport::Exchange` does NOT have class-level DSL methods. All existing
+exchanges use instance method overrides (`def exchange_name`, `def default_type`).
 
 Exchange is durable. Auto-delete is false (the exchange persists; queues are auto-delete).
 
@@ -392,8 +396,8 @@ Declares the `llm.metering` topic exchange. Single source of truth for the excha
 
 ```ruby
 class Legion::LLM::Metering::Exchange < ::Legion::Transport::Exchange
-  exchange_name 'llm.metering'
-  exchange_type :topic
+  def exchange_name = 'llm.metering'
+  def default_type  = 'topic'
 end
 ```
 
@@ -492,8 +496,8 @@ continue to work until `AuditPublisher` is updated. Do NOT delete the old class 
 
 ```ruby
 class Legion::LLM::Audit::Exchange < ::Legion::Transport::Exchange
-  exchange_name 'llm.audit'
-  exchange_type :topic
+  def exchange_name = 'llm.audit'
+  def default_type  = 'topic'
 end
 ```
 
