@@ -38,11 +38,11 @@ Legion::Extensions::Ollama
 ├── Client             # Standalone client class (includes all runners, holds @config)
 ├── Transport/         # (loaded only when Legion::Extensions::Core is present)
 │   ├── Exchanges/
-│   │   └── LlmRequest   # topic exchange 'llm.request'
+│   │   └── LlmRequest   # references Legion::LLM::Fleet::Exchange ('llm.request')
 │   ├── Queues/
-│   │   └── ModelRequest # parametric queue — one per (type, model) pair
+│   │   └── ModelRequest # parametric queue — one per (type, model) pair, auto-delete
 │   └── Messages/
-│       └── LlmResponse  # reply message published back to reply_to
+│       └── LlmResponse  # Legion::LLM::Fleet::Response subclass, reply via default exchange
 └── Actor/
     └── ModelWorker    # subscription actor — one per registered model/type
 ```
@@ -80,9 +80,11 @@ llm.request.ollama.generate.llama3.2
 
 ### Queue Strategy
 
-Each model+type combination gets its own **durable quorum queue** with a routing key that matches
+Each model+type combination gets its own **auto-delete queue** with a routing key that matches
 its queue name exactly. Multiple nodes carrying the same model compete fairly (no SAC) — any
 subscriber can serve. The queue name is identical to the routing key for clarity in the management UI.
+RabbitMQ policies (applied externally via Terraform) set `max-length`, `overflow: reject-publish`,
+and `x-max-priority: 10` on all `llm.request.*` queues.
 
 ### Configuration
 
@@ -106,20 +108,24 @@ The extension spawns one `Actor::ModelWorker` per subscription entry at boot.
 ### Data Flow
 
 ```
-Publisher (lex-llm-gateway / any fleet node)
+Publisher (legion-llm Fleet::Dispatcher / any fleet node)
   │  routing_key: "llm.request.ollama.embed.nomic-embed-text"
+  │  AMQP type: 'llm.fleet.request'
+  │  Body includes: message_context { conversation_id, message_id, request_id, exchange_id }
   ▼
 Exchange: llm.request  [topic, durable]
   │
-  └── Queue: llm.request.ollama.embed.nomic-embed-text  [quorum]
+  └── Queue: llm.request.ollama.embed.nomic-embed-text  [auto-delete]
             ▼
        Actor::ModelWorker (type=embed, model=nomic-embed-text)
             ▼
        Runners::Fleet#handle_request
+            │  copies message_context from request
             ▼
        Ollama::Client#embed(model: 'nomic-embed-text', ...)
             ▼
-       Transport::Messages::LlmResponse → reply_to queue (if present)
+       Fleet::Response (type: 'llm.fleet.response') → reply_to queue
+            Body includes: message_context (copied), response_message_id
 ```
 
 ### Standalone Mode (no Legion runtime)
@@ -152,6 +158,33 @@ The gem still works as a pure HTTP client library without AMQP, exactly as befor
 
 ---
 
+## Wire Protocol & Message Classes
+
+Fleet messages inherit from `Legion::LLM::Transport::Message` (defined in legion-llm), which
+extends `Legion::Transport::Message` with `message_context` propagation and LLM-specific headers.
+
+```
+Legion::Transport::Message                (platform base)
+  └── Legion::LLM::Transport::Message     (LLM base — message_context, llm_headers)
+       ├── Legion::LLM::Fleet::Request    (type: 'llm.fleet.request',  app_id: 'legion-llm')
+       ├── Legion::LLM::Fleet::Response   (type: 'llm.fleet.response', app_id: 'lex-ollama')
+       └── Legion::LLM::Fleet::Error      (type: 'llm.fleet.error',    app_id: 'lex-ollama')
+```
+
+Every fleet message carries `message_context` in the body for end-to-end tracing:
+```
+message_context:
+  conversation_id, message_id, parent_message_id, message_seq, request_id, exchange_id
+```
+
+A subset (`conversation_id`, `message_id`, `request_id`) is promoted to AMQP headers
+(`x-legion-llm-conversation-id`, etc.) for filtering without body parsing.
+
+See: `docs/plans/2026-04-08-fleet-wire-protocol.md` for full AMQP property mapping,
+platform-wide standard, and per-message-type specifications.
+
+---
+
 ## Dependencies
 
 | Gem | Purpose |
@@ -175,4 +208,4 @@ bundle exec rubocop
 ---
 
 **Maintained By**: Matthew Iverson (@Esity)
-**Last Updated**: 2026-04-07
+**Last Updated**: 2026-04-08
