@@ -6,30 +6,19 @@ module Legion
       module Transport
         module Messages
           # Published back to the caller's reply_to queue after a fleet request is processed.
-          # Uses the default RabbitMQ exchange (direct, empty string) with reply_to as routing key,
-          # which is standard for RPC-style reply routing.
-          class LlmResponse < Legion::Transport::Message
-            def routing_key
-              @options[:reply_to]
-            end
-
-            def exchange
-              Legion::Transport::Exchanges::Agent
-            end
-
-            def encrypt?
-              false
-            end
-
-            def message
-              {
-                correlation_id: @options[:correlation_id],
-                result:         @options[:result],
-                usage:          @options[:usage],
-                model:          @options[:model],
-                provider:       'ollama',
-                status:         @options[:status] || 200
-              }
+          #
+          # Inherits Legion::LLM::Fleet::Response which:
+          #   - sets type: 'llm.fleet.response'
+          #   - sets routing_key to @options[:reply_to]
+          #   - publishes via AMQP default exchange ('')
+          #   - propagates message_context into body and headers
+          #   - generates message_id with 'resp_' prefix
+          #
+          # This class only overrides app_id so audit records and the wire protocol
+          # correctly identify lex-ollama as the worker component.
+          class LlmResponse < Legion::LLM::Fleet::Response
+            def app_id
+              'lex-ollama'
             end
           end
         end

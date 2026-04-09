@@ -14,9 +14,9 @@ RSpec.describe Legion::Extensions::Ollama::Runners::Fleet do
     allow(client_instance).to receive(:chat).and_return(chat_result)
     allow(client_instance).to receive(:generate).and_return(generate_result)
 
-    # Suppress reply publishing in all tests unless specifically testing it
     stub_const('Legion::Transport', double('Legion::Transport'))
     allow(described_class).to receive(:publish_reply)
+    allow(described_class).to receive(:publish_error)
   end
 
   describe '.handle_request' do
@@ -87,13 +87,11 @@ RSpec.describe Legion::Extensions::Ollama::Runners::Fleet do
     end
 
     context 'when reply_to is provided' do
-      it 'calls publish_reply' do
-        allow(described_class).to receive(:publish_reply).and_call_original
-        allow(described_class).to receive(:publish_reply)
+      it 'calls publish_reply with keyword arguments' do
         fleet.handle_request(model: 'nomic-embed-text', request_type: 'embed',
                              input: 'hi', reply_to: 'agent.caller', correlation_id: 'cid-1')
         expect(described_class).to have_received(:publish_reply).with(
-          'agent.caller', 'cid-1', hash_including(model: 'nomic-embed-text')
+          hash_including(reply_to: 'agent.caller', correlation_id: 'cid-1', model: 'nomic-embed-text')
         )
       end
     end
@@ -123,6 +121,167 @@ RSpec.describe Legion::Extensions::Ollama::Runners::Fleet do
           fleet.handle_request(model: 'nomic-embed-text', request_type: 'embed', input: 'hi')
         end.not_to raise_error
       end
+    end
+  end
+
+  describe 'message_context propagation' do
+    it 'passes message_context to publish_reply' do
+      ctx = { conversation_id: 'conv_123', request_id: 'req_abc' }
+      fleet.handle_request(model: 'nomic-embed-text', request_type: 'embed',
+                           input: 'hi', reply_to: 'q', correlation_id: 'cid',
+                           message_context: ctx)
+      expect(described_class).to have_received(:publish_reply)
+        .with(hash_including(message_context: ctx))
+    end
+
+    it 'defaults message_context to empty hash when absent' do
+      fleet.handle_request(model: 'nomic-embed-text', request_type: 'embed',
+                           input: 'hi', reply_to: 'q', correlation_id: 'cid')
+      expect(described_class).to have_received(:publish_reply)
+        .with(hash_including(message_context: {}))
+    end
+  end
+
+  describe 'stream rejection' do
+    it 'returns 422 when stream: true' do
+      result = fleet.handle_request(model: 'llama3.2', request_type: 'chat',
+                                    messages: [], reply_to: 'q', stream: true)
+      expect(result[:status]).to eq(422)
+      expect(result[:error]).to eq('unsupported_streaming')
+    end
+
+    it 'publishes an error with unsupported_streaming code' do
+      fleet.handle_request(model: 'llama3.2', request_type: 'chat',
+                           messages: [], reply_to: 'q', stream: true)
+      expect(described_class).to have_received(:publish_error)
+        .with(hash_including(error: hash_including(code: 'unsupported_streaming')))
+    end
+
+    it 'does not call dispatch when stream: true' do
+      fleet.handle_request(model: 'llama3.2', request_type: 'chat',
+                           messages: [], reply_to: 'q', stream: true)
+      expect(client_instance).not_to have_received(:chat)
+    end
+
+    it 'passes message_context to publish_error' do
+      ctx = { conversation_id: 'conv_123' }
+      fleet.handle_request(model: 'llama3.2', request_type: 'chat',
+                           messages: [], reply_to: 'q', stream: true,
+                           message_context: ctx)
+      expect(described_class).to have_received(:publish_error)
+        .with(hash_including(message_context: ctx))
+    end
+  end
+
+  describe '.build_response_body' do
+    let(:now) { Time.now.utc }
+
+    it 'includes routing block with provider, model, tier, strategy, latency_ms' do
+      body = fleet.send(:build_response_body,
+                        request_type: 'embed', body: { 'embeddings' => [[0.1]] },
+                        usage: { input_tokens: 5, output_tokens: 0 },
+                        status: 200, model: 'nomic-embed-text',
+                        latency_ms: 42, received_at: now, returned_at: now)
+      expect(body[:routing][:provider]).to eq('ollama')
+      expect(body[:routing][:model]).to eq('nomic-embed-text')
+      expect(body[:routing][:tier]).to eq('fleet')
+      expect(body[:routing][:strategy]).to eq('fleet_dispatch')
+      expect(body[:routing][:latency_ms]).to eq(42)
+    end
+
+    it 'includes tokens block with input, output, total' do
+      body = fleet.send(:build_response_body,
+                        request_type: 'embed', body: {},
+                        usage: { input_tokens: 5, output_tokens: 3 },
+                        status: 200, model: 'nomic-embed-text',
+                        latency_ms: 10, received_at: now, returned_at: now)
+      expect(body[:tokens]).to eq(input: 5, output: 3, total: 8)
+    end
+
+    it 'includes timestamps in ISO 8601 format' do
+      body = fleet.send(:build_response_body,
+                        request_type: 'embed', body: {},
+                        usage: {}, status: 200, model: 'nomic-embed-text',
+                        latency_ms: 10, received_at: now, returned_at: now)
+      expect(body[:timestamps][:received]).to match(/\d{4}-\d{2}-\d{2}T/)
+    end
+
+    it 'includes embeddings key for embed request_type' do
+      body = fleet.send(:build_response_body,
+                        request_type: 'embed', body: { 'embeddings' => [[0.1]] },
+                        usage: {}, status: 200, model: 'nomic-embed-text',
+                        latency_ms: 10, received_at: now, returned_at: now)
+      expect(body[:embeddings]).to eq([[0.1]])
+    end
+
+    it 'includes message key for chat request_type' do
+      body = fleet.send(:build_response_body,
+                        request_type: 'chat',
+                        body: { 'message' => { 'content' => 'hello' } },
+                        usage: {}, status: 200, model: 'llama3.2',
+                        latency_ms: 10, received_at: now, returned_at: now)
+      expect(body[:message][:content]).to eq('hello')
+      expect(body[:message][:role]).to eq('assistant')
+    end
+
+    it 'includes message key for generate request_type' do
+      body = fleet.send(:build_response_body,
+                        request_type: 'generate',
+                        body: { 'response' => 'generated text' },
+                        usage: {}, status: 200, model: 'llama3.2',
+                        latency_ms: 10, received_at: now, returned_at: now)
+      expect(body[:message][:content]).to eq('generated text')
+      expect(body[:message][:role]).to eq('assistant')
+    end
+
+    it 'includes audit block' do
+      body = fleet.send(:build_response_body,
+                        request_type: 'chat', body: {},
+                        usage: {}, status: 200, model: 'llama3.2',
+                        latency_ms: 42, received_at: now, returned_at: now)
+      expect(body[:audit]['fleet:execute'][:outcome]).to eq('success')
+      expect(body[:audit]['fleet:execute'][:duration_ms]).to eq(42)
+    end
+  end
+
+  describe '.publish_reply' do
+    it 'swallows errors and does not raise' do
+      allow(described_class).to receive(:publish_reply).and_call_original
+      allow(Legion::Extensions::Ollama::Transport::Messages::LlmResponse)
+        .to receive(:new).and_raise(StandardError, 'boom')
+
+      expect do
+        fleet.send(:publish_reply,
+                   reply_to: 'q', correlation_id: 'cid', message_context: {},
+                   model: 'x', request_type: 'chat',
+                   result: { result: {}, status: 200 },
+                   received_at: Time.now.utc, returned_at: Time.now.utc)
+      end.not_to raise_error
+    end
+  end
+
+  describe '.publish_error' do
+    it 'swallows errors and does not raise' do
+      allow(described_class).to receive(:publish_error).and_call_original
+      allow(Legion::LLM::Fleet::Error).to receive(:new).and_raise(StandardError, 'boom')
+
+      expect do
+        fleet.send(:publish_error,
+                   reply_to: 'q', correlation_id: 'cid', message_context: {},
+                   model: 'x', request_type: 'chat',
+                   error: { code: 'test', message: 'test' })
+      end.not_to raise_error
+    end
+
+    it 'does nothing when reply_to is nil' do
+      allow(described_class).to receive(:publish_error).and_call_original
+      allow(Legion::LLM::Fleet::Error).to receive(:new)
+
+      fleet.send(:publish_error,
+                 reply_to: nil, correlation_id: 'cid', message_context: {},
+                 model: 'x', request_type: 'chat',
+                 error: { code: 'test', message: 'test' })
+      expect(Legion::LLM::Fleet::Error).not_to have_received(:new)
     end
   end
 end

@@ -39,7 +39,6 @@ RSpec.describe Legion::Extensions::Ollama::Transport::Queues::ModelRequest do
     end
 
     it 'sanitises a colon-containing model name during construction logic' do
-      # Test the private sanitise_model method directly
       instance = queue_class.allocate
       sanitised = instance.send(:sanitise_model, 'qwen3.5:27b')
       expect(sanitised).to eq('qwen3.5.27b')
@@ -53,14 +52,34 @@ RSpec.describe Legion::Extensions::Ollama::Transport::Queues::ModelRequest do
   end
 
   describe '#queue_options' do
-    it 'returns durable: true' do
-      instance = queue_class.allocate
-      expect(instance.queue_options[:durable]).to be(true)
+    let(:instance) do
+      q = queue_class.allocate
+      q.instance_variable_set(:@request_type, 'embed')
+      q.instance_variable_set(:@model, 'nomic-embed-text')
+      q
     end
 
-    it 'specifies quorum queue type' do
+    it 'is not durable' do
+      expect(instance.queue_options[:durable]).to be(false)
+    end
+
+    it 'is auto-delete' do
+      expect(instance.queue_options[:auto_delete]).to be(true)
+    end
+
+    it 'sets x-max-priority to 10' do
+      expect(instance.queue_options.dig(:arguments, 'x-max-priority')).to eq(10)
+    end
+
+    it 'does not set x-queue-type quorum' do
+      expect(instance.queue_options.dig(:arguments, :'x-queue-type')).to be_nil
+    end
+  end
+
+  describe '#dlx_enabled' do
+    it 'returns false' do
       instance = queue_class.allocate
-      expect(instance.queue_options.dig(:arguments, :'x-queue-type')).to eq('quorum')
+      expect(instance.dlx_enabled).to be(false)
     end
   end
 end

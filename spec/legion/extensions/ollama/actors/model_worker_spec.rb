@@ -27,11 +27,62 @@ RSpec.describe Legion::Extensions::Ollama::Actor::ModelWorker do
   describe '#initialize' do
     it 'stores request_type and model_name from keyword args' do
       w = worker_class.allocate
-      # Simulate only the attribute-setting portion of initialize
       w.instance_variable_set(:@request_type, 'chat')
       w.instance_variable_set(:@model_name, 'llama3.2')
       expect(w.request_type).to eq('chat')
       expect(w.model_name).to eq('llama3.2')
+    end
+  end
+
+  describe '#prefetch' do
+    it 'returns 1' do
+      worker = worker_class.allocate
+      expect(worker.prefetch).to eq(1)
+    end
+  end
+
+  describe '#consumer_priority' do
+    context 'when Legion::Settings is not defined' do
+      it 'returns 0' do
+        worker = worker_class.allocate
+        expect(worker.consumer_priority).to eq(0)
+      end
+    end
+
+    context 'when Legion::Settings is defined' do
+      before do
+        stub_const('Legion::Settings', double('Legion::Settings'))
+        allow(Legion::Settings).to receive(:dig)
+          .with(:ollama, :fleet, :consumer_priority)
+          .and_return(10)
+      end
+
+      it 'returns the configured value' do
+        worker = worker_class.allocate
+        expect(worker.consumer_priority).to eq(10)
+      end
+    end
+
+    context 'when setting is nil' do
+      before do
+        stub_const('Legion::Settings', double('Legion::Settings'))
+        allow(Legion::Settings).to receive(:dig)
+          .with(:ollama, :fleet, :consumer_priority)
+          .and_return(nil)
+      end
+
+      it 'returns 0' do
+        worker = worker_class.allocate
+        expect(worker.consumer_priority).to eq(0)
+      end
+    end
+  end
+
+  describe '#subscribe_options' do
+    it 'includes x-priority argument' do
+      worker = worker_class.allocate
+      opts = worker.subscribe_options
+      expect(opts[:arguments]['x-priority']).to eq(0)
     end
   end
 
@@ -74,6 +125,25 @@ RSpec.describe Legion::Extensions::Ollama::Actor::ModelWorker do
 
       expect(msg[:request_type]).to eq('embed')
       expect(msg[:model]).to eq('mxbai-embed-large')
+    end
+
+    it 'injects message_context as empty hash when absent' do
+      allow_any_instance_of(worker_class.superclass)
+        .to receive(:process_message)
+        .and_return({ input: 'hello' })
+
+      msg = worker.process_message({ input: 'hello' }, {}, {})
+      expect(msg[:message_context]).to eq({})
+    end
+
+    it 'does not overwrite an existing message_context' do
+      ctx = { conversation_id: 'conv_123', request_id: 'req_abc' }
+      allow_any_instance_of(worker_class.superclass)
+        .to receive(:process_message)
+        .and_return({ input: 'hello', message_context: ctx })
+
+      msg = worker.process_message({ input: 'hello', message_context: ctx }, {}, {})
+      expect(msg[:message_context]).to eq(ctx)
     end
   end
 

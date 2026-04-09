@@ -12,7 +12,7 @@ reporting, and **fleet queue subscription** for receiving routed LLM requests fr
 
 **GitHub**: https://github.com/LegionIO/lex-ollama
 **License**: MIT
-**Version**: 0.3.1
+**Version**: 0.3.2
 **Specs**: 82 examples (12 spec files) — fleet additions add ~35 more
 
 ---
