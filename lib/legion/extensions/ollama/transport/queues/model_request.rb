@@ -11,6 +11,13 @@ module Legion
           # in the RabbitMQ management UI, e.g.:
           #   llm.request.ollama.embed.nomic-embed-text
           #   llm.request.ollama.chat.qwen3.5.27b
+          #
+          # Queue strategy:
+          #   - classic (not quorum): quorum queues cannot be auto-delete
+          #   - auto_delete: true — queue deletes when last consumer disconnects + queue empties,
+          #     enabling basic.return feedback to publishers via mandatory: true
+          #   - x-max-priority: 10 — must be a queue argument at declaration time for classic
+          #     queues; policies handle max-length and overflow externally
           class ModelRequest < Legion::Transport::Queue
             def initialize(request_type:, model:, **)
               @request_type = request_type.to_s
@@ -23,14 +30,23 @@ module Legion
             end
 
             def queue_options
-              { durable: true, arguments: { 'x-queue-type': 'quorum' } }
+              {
+                durable:     false,
+                auto_delete: true,
+                arguments:   { 'x-max-priority' => 10 }
+              }
+            end
+
+            # Disable dead-letter exchange provisioning. The base class
+            # default_options always adds x-dead-letter-exchange when
+            # dlx_enabled returns true. Fleet queues are ephemeral
+            # (auto-delete) and must not provision persistent DLX queues.
+            def dlx_enabled
+              false
             end
 
             private
 
-            # Project convention: use dots as the only word separator in routing keys
-            # so queue names stay visually consistent (dots are the AMQP topic separator).
-            # e.g. "qwen3.5:27b" → "qwen3.5.27b"
             def sanitise_model(name)
               name.to_s.tr(':', '.')
             end

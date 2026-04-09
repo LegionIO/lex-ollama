@@ -5,14 +5,10 @@ module Legion
     module Ollama
       module Transport
         module Exchanges
-          class LlmRequest < Legion::Transport::Exchange
-            def exchange_name
-              'llm.request'
-            end
-
-            def default_type
-              'topic'
-            end
+          # Thin alias that delegates exchange definition to Legion::LLM::Fleet::Exchange.
+          # This class exists solely so Ollama::Transport topology introspection has a
+          # local reference without importing legion-llm internals directly.
+          class LlmRequest < Legion::LLM::Fleet::Exchange
           end
         end
       end

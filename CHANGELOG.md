@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.3.2] - 2026-04-08
+
+### Changed
+- `Transport::Exchanges::LlmRequest` now inherits `Legion::LLM::Fleet::Exchange` instead of declaring exchange properties independently — prevents silent divergence if the canonical exchange definition changes
+- `Transport::Queues::ModelRequest` switched from durable quorum queue to classic auto-delete with `x-max-priority: 10` — enables `basic.return` feedback when all workers disconnect; added `dlx_enabled: false` to prevent DLX provisioning on ephemeral queues
+- `Transport::Messages::LlmResponse` now inherits `Legion::LLM::Fleet::Response` instead of `Legion::Transport::Message` — gains wire protocol compliance (`type: 'llm.fleet.response'`, `message_context` propagation, default-exchange publishing, `resp_` prefixed message_id); overrides `app_id` to `'lex-ollama'`
+- `Runners::Fleet#handle_request` now accepts and propagates `message_context` verbatim from request to response; rejects `stream: true` requests with `unsupported_streaming` error; builds full wire protocol response envelope (routing, tokens, timestamps, audit, cost, stop)
+- `Runners::Fleet#publish_reply` switched from positional to keyword arguments; uses `fleet_correlation_id` instead of `correlation_id` to avoid collision with Legion task tracking
+- `Runners::Fleet#dispatch` now resolves Ollama host from `Legion::Settings` instead of using hardcoded default
+- `Actor::ModelWorker` now sets `prefetch(1)` for fair consumer dispatch; reads `consumer_priority` from `legion.ollama.fleet.consumer_priority` settings; passes `x-priority` in `subscribe_options`; injects `message_context: {}` default in `process_message`
+
+### Added
+- `Runners::Fleet#publish_error` — publishes `Legion::LLM::Fleet::Error` to caller's reply_to queue on validation failures (e.g., unsupported streaming)
+- `Runners::Fleet#build_response_body` — constructs wire protocol response body with routing, tokens, timestamps, audit, cost, and stop blocks
+
 ## [0.3.1] - 2026-04-08
 
 ### Added

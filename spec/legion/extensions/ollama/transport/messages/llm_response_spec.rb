@@ -3,68 +3,39 @@
 RSpec.describe Legion::Extensions::Ollama::Transport::Messages::LlmResponse do
   subject(:message_class) { described_class }
 
-  let(:base_options) do
-    {
-      reply_to:       'agent.test-node',
-      correlation_id: 'abc-123',
-      result:         { 'embeddings' => [[0.1, 0.2]] },
-      usage:          { input_tokens: 5, output_tokens: 0 },
-      model:          'nomic-embed-text',
-      status:         200
-    }
+  it 'inherits from Legion::LLM::Fleet::Response' do
+    expect(message_class.ancestors).to include(Legion::LLM::Fleet::Response)
+  end
+
+  describe '#app_id' do
+    it 'returns lex-ollama' do
+      instance = message_class.allocate
+      instance.instance_variable_set(:@options, {})
+      expect(instance.app_id).to eq('lex-ollama')
+    end
+  end
+
+  describe '#type' do
+    it 'returns llm.fleet.response' do
+      instance = message_class.allocate
+      instance.instance_variable_set(:@options, {})
+      expect(instance.type).to eq('llm.fleet.response')
+    end
   end
 
   describe '#routing_key' do
-    it 'returns the reply_to value from options' do
+    it 'returns the reply_to value' do
       instance = message_class.allocate
-      instance.instance_variable_set(:@options, base_options)
-      expect(instance.routing_key).to eq('agent.test-node')
+      instance.instance_variable_set(:@options, { reply_to: 'llm.fleet.reply.abc' })
+      expect(instance.routing_key).to eq('llm.fleet.reply.abc')
     end
   end
 
-  describe '#encrypt?' do
-    it 'returns false' do
+  describe '#priority' do
+    it 'returns 0' do
       instance = message_class.allocate
-      instance.instance_variable_set(:@options, base_options)
-      expect(instance.encrypt?).to be(false)
-    end
-  end
-
-  describe '#message' do
-    subject(:msg) do
-      instance = message_class.allocate
-      instance.instance_variable_set(:@options, base_options)
-      instance.message
-    end
-
-    it 'includes the correlation_id' do
-      expect(msg[:correlation_id]).to eq('abc-123')
-    end
-
-    it 'includes the result' do
-      expect(msg[:result]).to eq('embeddings' => [[0.1, 0.2]])
-    end
-
-    it 'includes the usage' do
-      expect(msg[:usage][:input_tokens]).to eq(5)
-    end
-
-    it 'includes the model' do
-      expect(msg[:model]).to eq('nomic-embed-text')
-    end
-
-    it 'sets provider to ollama' do
-      expect(msg[:provider]).to eq('ollama')
-    end
-
-    it 'includes the status' do
-      expect(msg[:status]).to eq(200)
-    end
-
-    it 'defaults status to 200 when not provided' do
-      instance = message_class.allocate
-      instance.instance_variable_set(:@options, base_options.except(:status))
-      expect(instance.message[:status]).to eq(200)
+      instance.instance_variable_set(:@options, {})
+      expect(instance.priority).to eq(0)
     end
   end
 end

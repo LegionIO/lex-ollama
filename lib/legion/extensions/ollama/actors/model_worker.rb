@@ -11,6 +11,8 @@ module Legion
         #
         #   legion:
         #     ollama:
+        #       fleet:
+        #         consumer_priority: 10
         #       subscriptions:
         #         - type: embed
         #           model: nomic-embed-text
@@ -43,6 +45,36 @@ module Legion
             false
           end
 
+          # prefetch(1) is required for consumer priority to work correctly:
+          # without it, a high-priority consumer can hold multiple messages while
+          # lower-priority consumers sit idle. With prefetch=1, each consumer
+          # completes one message before RabbitMQ delivers the next, and priority
+          # determines which idle consumer gets it.
+          def prefetch
+            1
+          end
+
+          # Consumer priority from settings. Tells RabbitMQ to prefer this consumer
+          # over lower-priority ones on the same queue when multiple consumers are idle.
+          # Standard scale: GPU server = 10, Mac Studio = 5, developer laptop = 1.
+          # Defaults to 0 (equal priority) if not configured.
+          def consumer_priority
+            return 0 unless defined?(Legion::Settings)
+
+            Legion::Settings.dig(:ollama, :fleet, :consumer_priority) || 0
+          end
+
+          # Subscribe options include x-priority argument so RabbitMQ can honour
+          # consumer priority when dispatching to competing consumers.
+          def subscribe_options
+            base = begin
+              super
+            rescue NoMethodError
+              {}
+            end
+            base.merge(arguments: { 'x-priority' => consumer_priority })
+          end
+
           # Override queue to return a model-scoped queue bound with the precise
           # routing key for this worker's (type, model) pair.
           def queue
@@ -50,11 +82,13 @@ module Legion
           end
 
           # Enrich every inbound message with the worker's own request_type and model
-          # so Runners::Fleet#handle_request always has them, even if the sender omitted them.
+          # so Runners::Fleet#handle_request always has them, even if the sender omitted
+          # them. Also defaults message_context to {} if absent.
           def process_message(payload, metadata, delivery_info)
             msg = super
-            msg[:request_type] ||= @request_type
-            msg[:model]        ||= @model_name
+            msg[:request_type]    ||= @request_type
+            msg[:model]           ||= @model_name
+            msg[:message_context] ||= {}
             msg
           end
 

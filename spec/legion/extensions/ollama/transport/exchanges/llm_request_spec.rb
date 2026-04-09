@@ -3,8 +3,8 @@
 RSpec.describe Legion::Extensions::Ollama::Transport::Exchanges::LlmRequest do
   subject(:exchange_class) { described_class }
 
-  it 'is a subclass of Legion::Transport::Exchange' do
-    expect(exchange_class.ancestors).to include(Legion::Transport::Exchange)
+  it 'is a subclass of Legion::LLM::Fleet::Exchange' do
+    expect(exchange_class.ancestors).to include(Legion::LLM::Fleet::Exchange)
   end
 
   describe '#exchange_name' do
