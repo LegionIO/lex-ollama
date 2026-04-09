@@ -83,7 +83,7 @@ module Legion
 
           # Enrich every inbound message with the worker's own request_type and model
           # so Runners::Fleet#handle_request always has them, even if the sender omitted
-          # them. Also normalises message_context to symbol keys.
+          # them. Also defaults message_context to {} if absent.
           def process_message(payload, metadata, delivery_info)
             msg = super
             msg[:request_type]    ||= @request_type

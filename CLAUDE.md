@@ -83,8 +83,9 @@ llm.request.ollama.generate.llama3.2
 Each model+type combination gets its own **auto-delete queue** with a routing key that matches
 its queue name exactly. Multiple nodes carrying the same model compete fairly (no SAC) — any
 subscriber can serve. The queue name is identical to the routing key for clarity in the management UI.
-RabbitMQ policies (applied externally via Terraform) set `max-length`, `overflow: reject-publish`,
-and `x-max-priority: 10` on all `llm.request.*` queues.
+RabbitMQ policies (applied externally via Terraform) set `max-length` and
+`overflow: reject-publish` on `llm.request.*` queues. Queue priority is enabled by declaring
+`x-max-priority: 10` on the queue itself (and may also be mirrored by policy for consistency).
 
 ### Configuration
 
