@@ -13,7 +13,7 @@ reporting, and **fleet queue subscription** for receiving routed LLM requests fr
 **GitHub**: https://github.com/LegionIO/lex-ollama
 **License**: MIT
 **Version**: 0.3.2
-**Specs**: 82 examples (12 spec files) — fleet additions add ~35 more
+**Specs**: 166 examples (17 spec files)
 
 ---
 
@@ -181,8 +181,9 @@ message_context:
 A subset (`conversation_id`, `message_id`, `request_id`) is promoted to AMQP headers
 (`x-legion-llm-conversation-id`, etc.) for filtering without body parsing.
 
-See: `docs/plans/2026-04-08-fleet-wire-protocol.md` for full AMQP property mapping,
-platform-wide standard, and per-message-type specifications.
+The wire protocol spec (AMQP property mapping, platform-wide standard, per-message-type
+specifications) was developed during the fleet design phase and is maintained in the
+legion-llm repository alongside the implementation.
 
 ---
 
@@ -210,4 +211,4 @@ bundle exec rubocop
 ---
 
 **Maintained By**: Matthew Iverson (@Esity)
-**Last Updated**: 2026-04-08
+**Last Updated**: 2026-04-10

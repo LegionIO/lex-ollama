@@ -44,6 +44,36 @@ gem install lex-ollama
 ### Version
 - `server_version` - Retrieve the Ollama server version (GET /api/version)
 
+### Fleet Queue Subscription
+- `handle_request` - Dispatch inbound fleet AMQP messages to the appropriate runner (chat/embed/generate)
+
+When `Legion::Extensions::Core` is present, lex-ollama subscribes to model-scoped queues on the
+`llm.request` topic exchange, accepting routed LLM inference work from other Legion fleet members.
+
+Each configured `(type, model)` pair gets its own auto-delete queue with routing key
+`llm.request.ollama.<type>.<model>`. Multiple nodes serving the same model compete fairly
+via RabbitMQ round-robin with consumer priority.
+
+```yaml
+legion:
+  ollama:
+    host: "http://localhost:11434"
+    fleet:
+      consumer_priority: 10        # H100: 10, Mac Studio: 5, MacBook: 1
+    subscriptions:
+      - type: embed
+        model: nomic-embed-text
+      - type: chat
+        model: "qwen3.5:27b"
+```
+
+Fleet messages use the wire protocol defined in `legion-llm`: typed AMQP messages
+(`llm.fleet.request` / `llm.fleet.response` / `llm.fleet.error`) with `message_context`
+propagation for end-to-end tracing.
+
+Without `Legion::Extensions::Core`, the gem works as a pure HTTP client library with no
+AMQP dependency.
+
 ## Standalone Client
 
 ```ruby
@@ -121,7 +151,7 @@ result[:usage]  # => { input_tokens: 1, output_tokens: 5, total_duration: ..., .
 
 ## Version
 
-0.3.1
+0.3.2
 
 ## License
 
