@@ -41,6 +41,12 @@ module Legion
             payload
           end
         end
+
+        class Once
+          def use_runner? = false
+          def enabled?    = true
+          def delay       = 1.0
+        end
       end
     end
   end

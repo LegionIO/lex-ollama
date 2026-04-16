@@ -75,10 +75,12 @@ module Legion
             base.merge(arguments: { 'x-priority' => consumer_priority })
           end
 
-          # Override queue to return a model-scoped queue bound with the precise
-          # routing key for this worker's (type, model) pair.
+          # Returns a queue CLASS (not instance) bound to the llm.request exchange
+          # with the routing key for this worker's (type, model) pair.
+          # The Subscription base class calls queue.new in initialize, so this must
+          # return a class, not an instance.
           def queue
-            @queue ||= build_and_bind_queue
+            @queue ||= build_queue_class
           end
 
           # Enrich every inbound message with the worker's own request_type and model
@@ -94,17 +96,22 @@ module Legion
 
           private
 
-          def build_and_bind_queue
+          def build_queue_class
             sanitised_model = @model_name.tr(':', '.')
             routing_key     = "llm.request.ollama.#{@request_type}.#{sanitised_model}"
+            exchange_class  = Transport::Exchanges::LlmRequest
 
-            queue_obj = Transport::Queues::ModelRequest.new(
-              request_type: @request_type,
-              model:        @model_name
-            )
-            exchange_obj = Transport::Exchanges::LlmRequest.new
-            queue_obj.bind(exchange_obj, routing_key: routing_key)
-            queue_obj
+            Class.new(Legion::Transport::Queue) do
+              define_method(:queue_name) { routing_key }
+              define_method(:queue_options) do
+                { durable: false, auto_delete: true, arguments: { 'x-max-priority' => 10 } }
+              end
+              define_method(:dlx_enabled) { false }
+              define_method(:initialize) do
+                super()
+                bind(exchange_class.new, routing_key: routing_key)
+              end
+            end
           end
         end
       end
