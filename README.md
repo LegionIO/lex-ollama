@@ -115,21 +115,21 @@ Pull models from an internal S3 mirror instead of the public Ollama registry:
 client = Legion::Extensions::Ollama::Client.new
 
 # List available models in S3
-client.list_s3_models(bucket: 'legion', endpoint: 'https://mesh.s3api-core.optum.com')
+client.list_s3_models(bucket: 'legion', endpoint: 'https://s3.example.internal')
 
 # Import directly to filesystem (works without Ollama running)
 client.import_from_s3(model: 'llama3:latest', bucket: 'legion',
-                      endpoint: 'https://mesh.s3api-core.optum.com')
+                      endpoint: 'https://s3.example.internal')
 
 # Push through Ollama API (requires Ollama running)
 client.sync_from_s3(model: 'llama3:latest', bucket: 'legion',
-                    endpoint: 'https://mesh.s3api-core.optum.com')
+                    endpoint: 'https://s3.example.internal')
 
 # Provision fleet with default models
 client.import_default_models(
   default_models: %w[llama3:latest nomic-embed-text:latest],
   bucket: 'legion',
-  endpoint: 'https://mesh.s3api-core.optum.com'
+  endpoint: 'https://s3.example.internal'
 )
 ```
 

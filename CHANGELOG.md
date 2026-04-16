@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.3] - 2026-04-16
+
+### Added
+- `Actor::ModelSync` — once actor; runs 5s after extension load; reads `legion.ollama.default_models` and `legion.ollama.s3` from settings; calls `import_from_s3` for any configured model not already present on disk; no-op if either setting is absent
+
+### Fixed
+- `Transport::Queues::ModelRequest` deleted — the framework auto-discovers every file in `transport/queues/` and calls `.new` with no arguments at startup, which crashed because `ModelRequest` required `request_type:` and `model:`; the queue definition is now an anonymous class created inline by `Actor::ModelWorker#build_queue_class`
+- `Actor::ModelWorker#queue` now returns a CLASS instead of an instance — `Subscription#initialize` calls `queue.new`, so returning an instance caused a silent `NoMethodError` on `NilClass#new`; the anonymous queue class has `queue_name`, `queue_options`, `dlx_enabled`, and `initialize` (exchange bind) defined inline via `define_method`
+
 ## [0.3.2] - 2026-04-08
 
 ### Changed

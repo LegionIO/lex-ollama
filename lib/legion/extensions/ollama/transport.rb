@@ -12,13 +12,8 @@ module Legion
       module Transport
         extend Legion::Extensions::Transport if Legion::Extensions.const_defined?(:Transport, false)
 
-        # All queue-to-exchange bindings are established dynamically by
-        # Actor::ModelWorker#build_and_bind_queue at subscription time.
-        # This file only needs to declare the exchange so topology/infra mode
-        # can introspect the full routing graph.
-        def self.additional_e_to_q
-          []
-        end
+        # All queue-to-exchange bindings for fleet queues are established dynamically by
+        # Actor::ModelWorker at subscription time via build_queue_class.
       end
     end
   end
