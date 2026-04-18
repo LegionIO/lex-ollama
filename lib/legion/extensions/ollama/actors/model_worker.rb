@@ -59,9 +59,7 @@ module Legion
           # Standard scale: GPU server = 10, Mac Studio = 5, developer laptop = 1.
           # Defaults to 0 (equal priority) if not configured.
           def consumer_priority
-            return 0 unless defined?(Legion::Settings)
-
-            Legion::Settings.dig(:ollama, :fleet, :consumer_priority) || 0
+            settings.dig(:fleet, :consumer_priority) || 0
           end
 
           # Subscribe options include x-priority argument so RabbitMQ can honour

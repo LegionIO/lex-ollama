@@ -28,6 +28,43 @@ module Legion
   module Extensions
     module Ollama
       extend Legion::Extensions::Core if Legion::Extensions.const_defined?(:Core, false)
+
+      def self.default_settings
+        {
+          s3:    {},
+          fleet: {}
+        }
+      end
+
+      # Called by the framework during autobuild. Runs normal actor discovery,
+      # then replaces the single ModelWorker entry with one concrete subclass
+      # per subscription entry in settings (each has a zero-arg initialize).
+      def self.build_actors
+        super
+        @actors.delete(:model_worker)
+
+        subs = settings[:subscriptions]
+        return unless subs.is_a?(Array)
+
+        subs.each do |sub|
+          request_type = sub[:type]&.to_s
+          model        = sub[:model]&.to_s
+          next unless request_type && model
+
+          actor_name   = :"model_worker_#{request_type}_#{model.tr(':.', '__')}"
+          worker_class = Class.new(Legion::Extensions::Ollama::Actor::ModelWorker) do
+            define_method(:initialize) { super(request_type: request_type, model: model) }
+          end
+
+          @actors[actor_name] = {
+            extension:      'lex-ollama',
+            extension_name: :ollama,
+            actor_name:     actor_name,
+            actor_class:    worker_class,
+            type:           'literal'
+          }
+        end
+      end
     end
   end
 end
