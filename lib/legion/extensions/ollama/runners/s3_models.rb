@@ -145,6 +145,29 @@ module Legion
             { result: results, status: 200 }
           end
 
+          def sync_configured_models(**)
+            s3_cfg = settings[:s3]
+            models = settings[:default_models]
+
+            return { result: false, status: 412, error: 'no s3 config' } unless s3_cfg.is_a?(Hash) && s3_cfg[:bucket]
+            return { result: false, status: 412, error: 'no default_models configured' } unless models.is_a?(Array) && !models.empty?
+
+            bucket      = s3_cfg[:bucket]
+            s3_opts     = s3_cfg.except(:bucket)
+            models_path = ENV.fetch('OLLAMA_MODELS', File.join(Dir.home, '.ollama', 'models'))
+
+            results = models.filter_map do |model|
+              name, tag = model.split(':')
+              tag ||= 'latest'
+              manifest = File.join(models_path, 'manifests', 'registry.ollama.ai', 'library', name, tag)
+              next if File.exist?(manifest)
+
+              import_from_s3(model: model, bucket: bucket, models_path: models_path, **s3_opts)
+            end
+
+            { result: results, status: 200 }
+          end
+
           private
 
           def default_models_path

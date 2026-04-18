@@ -40,6 +40,7 @@ gem install lex-ollama
 - `import_from_s3` - Download model from S3 directly to Ollama's filesystem (works before Ollama starts)
 - `sync_from_s3` - Download model from S3, push blobs through Ollama's API, write manifest to filesystem
 - `import_default_models` - Import a list of models from S3 (fleet provisioning)
+- `sync_configured_models` - Import all `default_models` from S3 that aren't already present locally
 
 ### Version
 - `server_version` - Retrieve the Ollama server version (GET /api/version)
@@ -58,6 +59,13 @@ via RabbitMQ round-robin with consumer priority.
 legion:
   ollama:
     host: "http://localhost:11434"
+    s3:
+      bucket: "legion"
+      prefix: "ollama/models"
+      endpoint: "https://s3.example.internal"
+    default_models:
+      - "qwen3.5:4b"
+      - "nomic-embed-text:latest"
     fleet:
       consumer_priority: 10        # H100: 10, Mac Studio: 5, MacBook: 1
     subscriptions:
@@ -66,6 +74,10 @@ legion:
       - type: chat
         model: "qwen3.5:27b"
 ```
+
+**Auto-provisioning**: When `s3` and `default_models` are configured, the `ModelSync` actor
+fires 5 seconds after boot and imports any listed models not already present on disk from the
+S3 mirror. No manual pull step needed for fleet nodes.
 
 Fleet messages use the wire protocol defined in `legion-llm`: typed AMQP messages
 (`llm.fleet.request` / `llm.fleet.response` / `llm.fleet.error`) with `message_context`
@@ -151,7 +163,7 @@ result[:usage]  # => { input_tokens: 1, output_tokens: 5, total_duration: ..., .
 
 ## Version
 
-0.3.2
+0.3.3
 
 ## License
 

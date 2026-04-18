@@ -42,37 +42,26 @@ RSpec.describe Legion::Extensions::Ollama::Actor::ModelWorker do
   end
 
   describe '#consumer_priority' do
-    context 'when Legion::Settings is not defined' do
+    context 'when no fleet priority is configured' do
       it 'returns 0' do
         worker = worker_class.allocate
+        allow(worker).to receive(:settings).and_return({})
         expect(worker.consumer_priority).to eq(0)
       end
     end
 
-    context 'when Legion::Settings is defined' do
-      before do
-        stub_const('Legion::Settings', double('Legion::Settings'))
-        allow(Legion::Settings).to receive(:dig)
-          .with(:ollama, :fleet, :consumer_priority)
-          .and_return(10)
-      end
-
+    context 'when fleet priority is configured' do
       it 'returns the configured value' do
         worker = worker_class.allocate
+        allow(worker).to receive(:settings).and_return({ fleet: { consumer_priority: 10 } })
         expect(worker.consumer_priority).to eq(10)
       end
     end
 
-    context 'when setting is nil' do
-      before do
-        stub_const('Legion::Settings', double('Legion::Settings'))
-        allow(Legion::Settings).to receive(:dig)
-          .with(:ollama, :fleet, :consumer_priority)
-          .and_return(nil)
-      end
-
+    context 'when fleet priority setting is nil' do
       it 'returns 0' do
         worker = worker_class.allocate
+        allow(worker).to receive(:settings).and_return({ fleet: { consumer_priority: nil } })
         expect(worker.consumer_priority).to eq(0)
       end
     end
@@ -81,6 +70,7 @@ RSpec.describe Legion::Extensions::Ollama::Actor::ModelWorker do
   describe '#subscribe_options' do
     it 'includes x-priority argument' do
       worker = worker_class.allocate
+      allow(worker).to receive(:settings).and_return({})
       opts = worker.subscribe_options
       expect(opts[:arguments]['x-priority']).to eq(0)
     end
