@@ -12,8 +12,8 @@ reporting, and **fleet queue subscription** for receiving routed LLM requests fr
 
 **GitHub**: https://github.com/LegionIO/lex-ollama
 **License**: MIT
-**Version**: 0.3.2
-**Specs**: 166 examples (17 spec files)
+**Version**: 0.3.3
+**Specs**: 154 examples (16 spec files)
 
 ---
 
@@ -28,7 +28,8 @@ Legion::Extensions::Ollama
 │   │                  #   pull_model, push_model, list_running
 │   ├── Embeddings     # embed
 │   ├── Blobs          # check_blob, push_blob
-│   ├── S3Models       # list_s3_models, import_from_s3, sync_from_s3, import_default_models
+│   ├── S3Models       # list_s3_models, import_from_s3, sync_from_s3, import_default_models,
+│   │                  #   sync_configured_models
 │   ├── Version        # server_version
 │   └── Fleet          # handle_request (fleet dispatcher — chat/embed/generate)
 ├── Helpers/
@@ -44,7 +45,8 @@ Legion::Extensions::Ollama
 │   └── Messages/
 │       └── LlmResponse  # Legion::LLM::Fleet::Response subclass, reply via default exchange
 └── Actor/
-    └── ModelWorker    # subscription actor — one per registered model/type
+    ├── ModelWorker    # subscription actor — one per registered model/type
+    └── ModelSync      # once actor — fires 5s after boot, pulls default models from S3
 ```
 
 ---
@@ -93,6 +95,15 @@ RabbitMQ policies (applied externally via Terraform) set `max-length` and
 legion:
   ollama:
     host: "http://localhost:11434"
+    s3:
+      bucket: "legion"
+      prefix: "ollama/models"
+      endpoint: "https://s3.example.internal"
+    default_models:
+      - "qwen3.5:4b"
+      - "nomic-embed-text:latest"
+    fleet:
+      consumer_priority: 10          # H100: 10, Mac Studio: 5, MacBook: 1
     subscriptions:
       - type: embed
         model: nomic-embed-text
@@ -104,7 +115,15 @@ legion:
         model: llama3.2
 ```
 
-The extension spawns one `Actor::ModelWorker` per subscription entry at boot.
+**`s3` + `default_models`**: `Actor::ModelSync` fires 5 seconds after extension load and calls
+`Runners::S3Models#sync_configured_models` to import any listed models not already present
+locally. All download logic lives in the runner; the actor is only the trigger. Uses the
+inherited `Actors::Base#manual` path (not `Legion::Runner`) so errors surface via
+`handle_exception` rather than being silently swallowed by `Concurrent::ScheduledTask`.
+
+**`subscriptions`**: `Ollama.build_actors` replaces the base `ModelWorker` actor entry with one
+dynamically generated subclass per subscription entry (each with a zero-arg `initialize`).
+The extension spawns one `Actor::ModelWorker` per entry at boot.
 
 ### Data Flow
 
@@ -154,6 +173,12 @@ The gem still works as a pure HTTP client library without AMQP, exactly as befor
   - `request_type: 'generate'` → `Client#generate`.
   - anything else (including `'chat'` or unknown) → `Client#chat`.
 - **`Actor::ModelWorker#use_runner?` is `false`** — bypasses `Legion::Runner` / task DB entirely.
+- **`Actor::ModelSync#use_runner?` is `false`** — uses inherited `Actors::Base#manual` which calls
+  `runner_class.send(runner_function, **{})` with proper `handle_exception` error handling.
+- **`Ollama.build_actors`** dynamically generates one `ModelWorker` subclass per subscription
+  entry, each with a zero-arg `initialize` that passes the frozen `request_type` and `model`.
+- **`Ollama.default_settings`** returns `{ s3: {}, fleet: {} }` so `settings[:s3]` and
+  `settings[:fleet]` are always hashes even without user configuration.
 - **Reply publishing** never raises — errors are swallowed so the AMQP ack is not blocked.
 - **Colon sanitisation** — `qwen3.5:27b` becomes `qwen3.5.27b` in queue/routing-key strings.
 
@@ -211,4 +236,4 @@ bundle exec rubocop
 ---
 
 **Maintained By**: Matthew Iverson (@Esity)
-**Last Updated**: 2026-04-10
+**Last Updated**: 2026-04-17
