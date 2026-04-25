@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.3.4] - 2026-04-24
+
+### Fixed
+- `Ollama.build_actors` and `Ollama.default_settings` were absent from the installed 0.3.3 gem (gem was packaged before `bafb124` landed) — `Actor::ModelWorker` (requires `request_type:` and `model:` kwargs) was reaching the subscription actor pool with no zero-arg initializer, raising `ArgumentError: missing keywords: :request_type, :model` on every boot when running under the Homebrew legionio install
+
 ## [0.3.3] - 2026-04-16
 
 ### Added
