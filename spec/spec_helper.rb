@@ -47,6 +47,18 @@ module Legion
           def enabled?    = true
           def delay       = 1.0
         end
+
+        class Every
+          def use_runner? = false
+          def enabled?    = true
+          def time        = 1.0
+
+          def handle_exception(error, **)
+            raise error
+          end
+
+          def lex_name = :ollama
+        end
       end
     end
   end
@@ -89,7 +101,7 @@ module Legion
 
     module Fleet
       class Exchange < ::Legion::Transport::Exchange
-        def exchange_name = 'llm.request'
+        def exchange_name = 'llm.fleet'
         def default_type  = 'topic'
       end
 

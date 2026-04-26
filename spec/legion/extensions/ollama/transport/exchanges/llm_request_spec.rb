@@ -8,9 +8,9 @@ RSpec.describe Legion::Extensions::Ollama::Transport::Exchanges::LlmRequest do
   end
 
   describe '#exchange_name' do
-    it 'returns llm.request' do
+    it 'returns llm.fleet' do
       instance = exchange_class.allocate
-      expect(instance.exchange_name).to eq('llm.request')
+      expect(instance.exchange_name).to eq('llm.fleet')
     end
   end
 
