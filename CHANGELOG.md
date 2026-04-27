@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.5] - 2026-04-25
+
+### Added
+- Fleet model workers now bind transient classic queues to shared `llm.fleet` model lanes, with configurable consumer priority, queue expiration, and message TTL.
+- Subscription entries can provide a context window so inference workers bind lanes like `llm.fleet.inference.qwen3-5-27b.ctx32768`.
+
 ## [0.3.4] - 2026-04-24
 
 ### Fixed
