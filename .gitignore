@@ -8,6 +8,8 @@
 /tmp/
 Gemfile.lock
 *.gem
+legionio.key
+/legionio/
 
 # rspec failure tracking
 .rspec_status
