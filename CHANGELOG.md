@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.8] - 2026-04-28
+
+### Added
+- Publish nonblocking `llm.registry` availability, unavailability, heartbeat, and degraded events from `Actor::ModelWorker` using `lex-llm` `Legion::Extensions::Llm::Routing::RegistryEvent` envelopes when transport is available.
+- Add local `Transport::Exchanges::LlmRegistry` and `Transport::Messages::RegistryEvent` wrappers for `llm.registry` topic publishing without requiring a database.
+
 ## [0.3.7] - 2026-04-28
 
 ### Fixed

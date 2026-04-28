@@ -353,4 +353,91 @@ RSpec.describe Legion::Extensions::Ollama::Actor::ModelWorker do
       expect(queue_instance.queue_options[:arguments]['x-expires']).to eq(15_000)
     end
   end
+
+  describe 'registry events' do
+    let(:worker) do
+      worker_class.allocate.tap do |w|
+        w.instance_variable_set(:@request_type, 'chat')
+        w.instance_variable_set(:@model_name, 'qwen3.5:27b')
+        w.instance_variable_set(:@context_window, 32_768)
+        w.instance_variable_set(:@lane_style, 'offering')
+        w.instance_variable_set(:@offering_instance_id, 'macbook-m4')
+      end
+    end
+
+    it 'builds lex-llm available envelopes for the worker lane' do
+      event = worker.send(:registry_event_for, :available)
+
+      expect(event.to_h).to include(
+        event_type: :offering_available,
+        lane:       'llm.fleet.offering.macbook-m4.qwen3-5-27b.inference',
+        runtime:    { node: 'macbook-m4', scheduler: :basic_get, polling: true },
+        health:     { ready: true, status: :available },
+        metadata:   { extension: :lex_ollama, request_type: 'chat', lane_kind: 'inference' }
+      )
+      expect(event.to_h[:offering]).to include(
+        provider_family:   :ollama,
+        provider_instance: :'macbook-m4',
+        transport:         :rabbitmq,
+        model:             'qwen3.5:27b',
+        usage_type:        :inference,
+        capabilities:      %i[chat],
+        limits:            { context_window: 32_768 }
+      )
+    end
+
+    it 'builds embedding capability envelopes for embed workers' do
+      worker.instance_variable_set(:@request_type, 'embed')
+      worker.instance_variable_set(:@model_name, 'nomic-embed-text')
+
+      event = worker.send(:registry_event_for, :heartbeat)
+
+      expect(event.to_h[:event_type]).to eq(:offering_heartbeat)
+      expect(event.to_h[:offering]).to include(
+        usage_type:   :embedding,
+        capabilities: %i[embedding]
+      )
+    end
+
+    it 'publishes RegistryEvent messages without raising when transport succeeds' do
+      message = instance_double(Legion::Extensions::Ollama::Transport::Messages::RegistryEvent)
+      allow(Legion::Extensions::Ollama::Transport::Messages::RegistryEvent).to receive(:new).and_return(message)
+      allow(message).to receive(:publish).and_return({ accepted: true })
+
+      expect { worker.send(:publish_registry_event, :available) }.not_to raise_error
+      expect(Legion::Extensions::Ollama::Transport::Messages::RegistryEvent).to have_received(:new)
+      expect(message).to have_received(:publish).with(spool: false)
+    end
+
+    it 'swallows registry publish failures so serving is not blocked' do
+      allow(Legion::Extensions::Ollama::Transport::Messages::RegistryEvent)
+        .to receive(:new)
+        .and_raise(StandardError, 'amqp unavailable')
+      allow(worker).to receive(:log_registry_publish_failure)
+
+      expect { worker.send(:publish_registry_event, :available) }.not_to raise_error
+      expect(worker).to have_received(:log_registry_publish_failure)
+    end
+
+    it 'starts heartbeat publishing in a background thread' do
+      thread = instance_double(Thread, alive?: false)
+      allow(Thread).to receive(:new).and_return(thread)
+
+      worker.send(:start_registry_heartbeat)
+
+      expect(Thread).to have_received(:new)
+    end
+
+    it 'marks the heartbeat loop stopped during shutdown' do
+      thread = instance_double(Thread, alive?: true)
+      worker.instance_variable_set(:@registry_heartbeat_running, true)
+      worker.instance_variable_set(:@registry_heartbeat_thread, thread)
+      allow(thread).to receive(:kill)
+
+      worker.send(:stop_registry_heartbeat)
+
+      expect(worker.instance_variable_get(:@registry_heartbeat_running)).to be(false)
+      expect(thread).to have_received(:kill)
+    end
+  end
 end

@@ -24,7 +24,9 @@ end
 # so the gem still works as a standalone HTTP client without any AMQP runtime.
 if Legion::Extensions.const_defined?(:Core, false)
   require 'legion/extensions/ollama/transport/exchanges/llm_request'
+  require 'legion/extensions/ollama/transport/exchanges/llm_registry'
   require 'legion/extensions/ollama/transport/messages/llm_response'
+  require 'legion/extensions/ollama/transport/messages/registry_event'
   require 'legion/extensions/ollama/transport'
   require 'legion/extensions/ollama/actors/model_worker'
   require 'legion/extensions/ollama/actors/endpoint_puller'

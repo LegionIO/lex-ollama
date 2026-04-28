@@ -32,6 +32,7 @@ module Legion
           POLLING_SCHEDULERS = %i[basic_get poll polling].freeze
           SUBSCRIPTION_SCHEDULERS = %i[subscribe subscription basic_consume consumer].freeze
           POLL_LOCK = Mutex.new
+          REGISTRY_HEARTBEAT_INTERVAL = 30.0
 
           attr_reader :request_type, :model_name, :context_window, :offering_instance_id
 
@@ -119,17 +120,26 @@ module Legion
           end
 
           def activate
-            return super unless endpoint_polling?
-
-            @polling = true
-            @poll_task = async.run_basic_get_loop
-            log.info "[ModelWorker] activated polling lane #{lane_key}" if defined?(log)
+            result = if endpoint_polling?
+                       @polling = true
+                       @poll_task = async.run_basic_get_loop
+                       log.info "[ModelWorker] activated polling lane #{lane_key}" if defined?(log)
+                       @poll_task
+                     else
+                       super
+                     end
+            publish_registry_event_async(:available)
+            start_registry_heartbeat
+            result
           rescue StandardError => e
+            publish_registry_event_async(:degraded, error: e)
             handle_exception(e, level: :fatal)
           end
 
           def cancel
             @polling = false
+            stop_registry_heartbeat
+            publish_registry_event_async(:unavailable)
             return true unless instance_variable_defined?(:@consumer) && @consumer
 
             super
@@ -219,6 +229,182 @@ module Legion
           end
 
           private
+
+          def start_registry_heartbeat
+            return unless registry_publishing_available?
+            return if @registry_heartbeat_thread&.alive?
+
+            @registry_heartbeat_running = true
+            @registry_heartbeat_thread = Thread.new do
+              Thread.current.abort_on_exception = false
+              while @registry_heartbeat_running && !shutting_down?
+                sleep registry_heartbeat_interval
+                publish_registry_event(:heartbeat) if @registry_heartbeat_running && !shutting_down?
+              end
+            rescue StandardError => e
+              log_registry_publish_failure(e, level: :debug)
+            end
+          rescue StandardError => e
+            log_registry_publish_failure(e, level: :debug)
+          end
+
+          def stop_registry_heartbeat
+            @registry_heartbeat_running = false
+            @registry_heartbeat_thread&.kill if @registry_heartbeat_thread&.alive?
+          end
+
+          def registry_heartbeat_interval
+            configured = nested_setting(settings, :fleet, :registry, :heartbeat_interval_seconds) ||
+                         nested_setting(settings, :fleet, :registry_heartbeat_interval_seconds)
+            interval = configured.nil? ? REGISTRY_HEARTBEAT_INTERVAL : Float(configured)
+            interval.positive? ? interval : REGISTRY_HEARTBEAT_INTERVAL
+          rescue StandardError
+            REGISTRY_HEARTBEAT_INTERVAL
+          end
+
+          def publish_registry_event_async(kind, error: nil)
+            return unless registry_publishing_available?
+
+            Thread.new do
+              Thread.current.abort_on_exception = false
+              publish_registry_event(kind, error: error)
+            rescue StandardError => e
+              log_registry_publish_failure(e, level: :debug)
+            end
+          rescue StandardError => e
+            log_registry_publish_failure(e, level: :debug)
+          end
+
+          def publish_registry_event(kind, error: nil)
+            event = registry_event_for(kind, error: error)
+            Transport::Messages::RegistryEvent.new(event: event).publish(spool: false)
+          rescue StandardError => e
+            log_registry_publish_failure(e)
+          end
+
+          def registry_event_for(kind, error: nil)
+            registry_event_class.public_send(
+              registry_event_method(kind),
+              registry_offering,
+              runtime:  registry_runtime,
+              capacity: registry_capacity,
+              health:   registry_health(kind, error: error),
+              lane:     lane_key,
+              metadata: registry_metadata
+            )
+          end
+
+          def registry_event_method(kind)
+            case kind.to_sym
+            when :available then :available
+            when :unavailable then :unavailable
+            when :heartbeat then :heartbeat
+            else :degraded
+            end
+          end
+
+          def registry_offering
+            limits = {}
+            limits[:context_window] = @context_window if @context_window
+            {
+              provider_family:   :ollama,
+              provider_instance: registry_provider_instance,
+              transport:         :rabbitmq,
+              model:             @model_name,
+              usage_type:        registry_usage_type,
+              capabilities:      registry_capabilities,
+              limits:            limits,
+              routing_metadata:  { lane: lane_key },
+              metadata:          { lex: :ollama, lane_style: @lane_style || 'shared' }
+            }
+          end
+
+          def registry_runtime
+            {
+              node:      registry_provider_instance,
+              scheduler: fleet_scheduler,
+              polling:   endpoint_polling?
+            }
+          end
+
+          def registry_capacity
+            {
+              concurrency:       1,
+              consumer_priority: consumer_priority,
+              queue_max_length:  queue_max_length
+            }
+          end
+
+          def registry_health(kind, error: nil)
+            health = {
+              ready:  %i[available heartbeat].include?(kind.to_sym),
+              status: registry_health_status(kind)
+            }
+            health[:error_class] = error.class.name if error
+            health[:error] = error.message if error
+            health
+          end
+
+          def registry_health_status(kind)
+            case kind.to_sym
+            when :available, :heartbeat then :available
+            when :unavailable then :unavailable
+            else :degraded
+            end
+          end
+
+          def registry_metadata
+            {
+              extension:    :lex_ollama,
+              request_type: @request_type,
+              lane_kind:    lane_kind
+            }
+          end
+
+          def registry_usage_type
+            lane_kind == 'embed' ? :embedding : :inference
+          end
+
+          def registry_capabilities
+            return %i[embedding] if lane_kind == 'embed'
+            return %i[completion] if @request_type == 'generate'
+
+            %i[chat]
+          end
+
+          def registry_provider_instance
+            @offering_instance_id || node_identity
+          end
+
+          def node_identity
+            return Legion::Settings.dig(:node, :canonical_name).to_s if defined?(Legion::Settings) &&
+                                                                        Legion::Settings.dig(:node, :canonical_name)
+
+            'unknown'
+          rescue StandardError
+            'unknown'
+          end
+
+          def registry_publishing_available?
+            defined?(::Legion::Transport) &&
+              defined?(::Legion::Extensions::Llm::Routing::RegistryEvent) &&
+              defined?(Transport::Messages::RegistryEvent)
+          end
+
+          def registry_event_class
+            ::Legion::Extensions::Llm::Routing::RegistryEvent
+          end
+
+          def log_registry_publish_failure(error, level: :warn)
+            message = "[ModelWorker] llm.registry publish failed lane=#{lane_key}: #{error.class}: #{error.message}"
+            if defined?(log) && log.respond_to?(level)
+              log.public_send(level, message)
+            elsif defined?(log) && log.respond_to?(:debug)
+              log.debug(message)
+            end
+          rescue StandardError
+            nil
+          end
 
           def build_queue_class(queue_config = {})
             lane_key = self.lane_key

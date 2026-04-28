@@ -28,5 +28,6 @@ Gem::Specification.new do |spec|
 
   spec.add_dependency 'faraday', '>= 2.0'
   spec.add_dependency 'legion-llm', '>= 0.8.32'
+  spec.add_dependency 'lex-llm', '>= 0.1.0'
   spec.add_dependency 'lex-s3', '>= 0.2'
 end
