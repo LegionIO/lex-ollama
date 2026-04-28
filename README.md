@@ -49,11 +49,19 @@ gem install lex-ollama
 - `handle_request` - Dispatch inbound fleet AMQP messages to the appropriate runner (chat/embed/generate)
 
 When `Legion::Extensions::Core` is present, lex-ollama subscribes to model-scoped queues on the
-`llm.request` topic exchange, accepting routed LLM inference work from other Legion fleet members.
+`llm.fleet` topic exchange, accepting routed LLM inference work from other Legion fleet members.
 
-Each configured `(type, model)` pair gets its own auto-delete queue with routing key
-`llm.request.ollama.<type>.<model>`. Multiple nodes serving the same model compete fairly
-via RabbitMQ round-robin with consumer priority.
+Each configured `(type, model)` pair gets its own durable quorum lane queue. Shared lanes use
+`llm.fleet.embed.<model>` for embeddings and `llm.fleet.inference.<model>.ctx<context>` for
+generation/chat subscriptions with a configured context window. Endpoint workers default to
+explicit `basic_get` polling with a process-wide lane lock, so local one-model-at-a-time
+devices do not reserve work from multiple model queues. GPU or datacenter workers can opt into
+RabbitMQ consumer subscriptions with `legion.ollama.fleet.scheduler: :subscription`.
+
+When offering lanes are enabled, workers also bind exact `legion-llm` compatible lanes in the
+form `llm.fleet.offering.<instance>.<model>.<operation>`. Workers publish nonblocking
+availability, heartbeat, degraded, and unavailable events to `llm.registry` when the transport
+runtime is loaded.
 
 ```yaml
 legion:
@@ -67,12 +75,29 @@ legion:
       - "qwen3.5:4b"
       - "nomic-embed-text:latest"
     fleet:
-      consumer_priority: 10        # H100: 10, Mac Studio: 5, MacBook: 1
+      scheduler: basic_get
+      consumer_priority: 10
+      queue_expires_ms: 60000
+      message_ttl_ms: 120000
+      queue_max_length: 100
+      delivery_limit: 3
+      consumer_ack_timeout_ms: 300000
+      endpoint:
+        enabled: false
+        empty_lane_backoff_ms: 250
+        idle_backoff_ms: 1000
+        max_consecutive_pulls_per_lane: 0
+      offering_lanes:
+        enabled: false
+        instance_id: "macbook-m4"
+      registry:
+        heartbeat_interval_seconds: 30
     subscriptions:
       - type: embed
         model: nomic-embed-text
       - type: chat
         model: "qwen3.5:27b"
+        context_window: 32768
 ```
 
 **Auto-provisioning**: When `s3` and `default_models` are configured, the `ModelSync` actor
@@ -163,7 +188,7 @@ result[:usage]  # => { input_tokens: 1, output_tokens: 5, total_duration: ..., .
 
 ## Version
 
-0.3.3
+0.3.9
 
 ## License
 
