@@ -170,6 +170,26 @@ RSpec.describe Legion::Extensions::Ollama::Actor::ModelWorker do
 
       expect(worker.lane_key).to eq('llm.fleet.inference.qwen3-5-27b.ctx32768')
     end
+
+    it 'forms an exact offering lane key compatible with legion-llm offering routing' do
+      worker = worker_class.allocate
+      worker.instance_variable_set(:@request_type, 'chat')
+      worker.instance_variable_set(:@model_name, 'qwen3.6:27b')
+      worker.instance_variable_set(:@lane_style, 'offering')
+      worker.instance_variable_set(:@offering_instance_id, 'macbook-m4')
+
+      expect(worker.lane_key).to eq('llm.fleet.offering.macbook-m4.qwen3-6-27b.inference')
+    end
+
+    it 'uses embed as the exact offering operation for embedding workers' do
+      worker = worker_class.allocate
+      worker.instance_variable_set(:@request_type, 'embed')
+      worker.instance_variable_set(:@model_name, 'nomic-embed-text:latest')
+      worker.instance_variable_set(:@lane_style, 'offering')
+      worker.instance_variable_set(:@offering_instance_id, 'gpu-01')
+
+      expect(worker.lane_key).to eq('llm.fleet.offering.gpu-01.nomic-embed-text-latest.embed')
+    end
   end
 
   describe '#queue' do

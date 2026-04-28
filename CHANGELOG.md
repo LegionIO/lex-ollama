@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.6] - 2026-04-28
+
+### Added
+- `Actor::ModelWorker` can now bind opt-in exact offering lanes compatible with legion-llm's `llm.fleet.offering.<instance>.<model>.<operation>` routing style while preserving the existing shared `llm.fleet.*` lanes
+- `legion.ollama.fleet.offering_lanes` settings default to disabled with no instance id, so existing shared-lane fleet workers keep their current behavior unless exact offering lanes are explicitly enabled
+
 ## [0.3.5] - 2026-04-28
 
 ### Changed

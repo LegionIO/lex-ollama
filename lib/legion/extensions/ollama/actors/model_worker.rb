@@ -31,12 +31,15 @@ module Legion
           SUBSCRIPTION_SCHEDULERS = %i[subscribe subscription basic_consume consumer].freeze
           POLL_LOCK = Mutex.new
 
-          attr_reader :request_type, :model_name, :context_window
+          attr_reader :request_type, :model_name, :context_window, :offering_instance_id
 
-          def initialize(request_type:, model:, context_window: nil, **)
+          def initialize(request_type:, model:, context_window: nil, lane_style: :shared,
+                         offering_instance_id: nil, **)
             @request_type = request_type.to_s
             @model_name   = model.to_s
             @context_window = normalize_context_window(context_window)
+            @lane_style = lane_style.to_s
+            @offering_instance_id = offering_instance_id&.to_s
             @polling = false
             super(**)
           end
@@ -121,11 +124,7 @@ module Legion
           end
 
           def lane_key
-            @lane_key ||= begin
-              parts = ['llm.fleet', lane_kind, model_slug]
-              parts << "ctx#{@context_window}" if lane_kind == 'inference' && @context_window
-              parts.join('.')
-            end
+            @lane_key ||= offering_lane? ? offering_lane_key : shared_lane_key
           end
 
           def run_basic_get_loop
@@ -231,7 +230,40 @@ module Legion
           end
 
           def model_slug
-            @model_name.downcase.gsub(/[^a-z0-9]+/, '-').gsub(/\A-+|-+\z/, '')
+            sanitize_segment(@model_name).tr('.', '-')
+          end
+
+          def offering_lane?
+            @lane_style == 'offering'
+          end
+
+          def shared_lane_key
+            parts = ['llm.fleet', lane_kind, model_slug]
+            parts << "ctx#{@context_window}" if lane_kind == 'inference' && @context_window
+            parts.join('.')
+          end
+
+          def offering_lane_key
+            [
+              'llm',
+              'fleet',
+              'offering',
+              public_segment(:offering_instance_id, @offering_instance_id),
+              model_slug,
+              lane_kind
+            ].join('.')
+          end
+
+          def sanitize_segment(value)
+            value.to_s.downcase.gsub(/[^a-z0-9]+/, '-').gsub(/\A-+|-+\z/, '')
+          end
+
+          def public_segment(label, value)
+            segment = sanitize_segment(value)
+            raise ArgumentError, "#{label} is empty after sanitization" if segment.empty?
+            raise ArgumentError, "#{label} exceeds 64 characters" if segment.length > 64
+
+            segment
           end
 
           def normalize_context_window(value)

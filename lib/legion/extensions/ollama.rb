@@ -33,12 +33,16 @@ module Legion
         {
           s3:    {},
           fleet: {
-            scheduler: :basic_get,
-            endpoint:  {
+            scheduler:      :basic_get,
+            endpoint:       {
               enabled:                        false,
               empty_lane_backoff_ms:          250,
               idle_backoff_ms:                1_000,
               max_consecutive_pulls_per_lane: 0
+            },
+            offering_lanes: {
+              enabled:     false,
+              instance_id: nil
             }
           }
         }
@@ -60,20 +64,13 @@ module Legion
           context_window = context_window_for(sub)
           next unless request_type && model
 
-          actor_name   = :"model_worker_#{request_type}_#{model.tr(':.', '__')}"
-          worker_class = Class.new(Legion::Extensions::Ollama::Actor::ModelWorker) do
-            define_method(:initialize) do
-              super(request_type: request_type, model: model, context_window: context_window)
-            end
-          end
+          register_model_worker(request_type: request_type, model: model, context_window: context_window)
 
-          @actors[actor_name] = {
-            extension:      'lex-ollama',
-            extension_name: :ollama,
-            actor_name:     actor_name,
-            actor_class:    worker_class,
-            type:           'literal'
-          }
+          offering_instance_id = offering_instance_for(sub)
+          next unless offering_instance_id
+
+          register_model_worker(request_type: request_type, model: model, context_window: context_window,
+                                lane_style: :offering, offering_instance_id: offering_instance_id)
         end
       end
 
@@ -99,6 +96,76 @@ module Legion
         Integer(raw)
       rescue ArgumentError, TypeError
         nil
+      end
+
+      def self.register_model_worker(request_type:, model:, context_window:, lane_style: :shared,
+                                     offering_instance_id: nil)
+        actor_name = model_worker_actor_name(
+          request_type:         request_type,
+          model:                model,
+          lane_style:           lane_style,
+          offering_instance_id: offering_instance_id
+        )
+        worker_class = Class.new(Legion::Extensions::Ollama::Actor::ModelWorker) do
+          define_method(:initialize) do
+            super(
+              request_type:         request_type,
+              model:                model,
+              context_window:       context_window,
+              lane_style:           lane_style,
+              offering_instance_id: offering_instance_id
+            )
+          end
+        end
+
+        @actors[actor_name] = {
+          extension:      'lex-ollama',
+          extension_name: :ollama,
+          actor_name:     actor_name,
+          actor_class:    worker_class,
+          type:           'literal'
+        }
+      end
+
+      def self.offering_instance_for(subscription)
+        return nil unless offering_lanes_enabled?
+
+        raw = subscription[:offering_instance_id] ||
+              subscription['offering_instance_id'] ||
+              subscription[:provider_instance] ||
+              subscription['provider_instance'] ||
+              subscription[:instance_id] ||
+              subscription['instance_id'] ||
+              fleet_offering_lane_setting(:instance_id) ||
+              fleet_offering_lane_setting(:provider_instance) ||
+              fleet_offering_lane_setting(:offering_instance_id)
+        normalized = raw&.to_s
+        return nil if normalized.nil? || normalized.empty?
+
+        normalized
+      end
+
+      def self.offering_lanes_enabled?
+        fleet_offering_lane_setting(:enabled) == true
+      rescue StandardError
+        false
+      end
+
+      def self.fleet_offering_lane_setting(key)
+        fleet = settings[:fleet] || settings['fleet'] || {}
+        offering_lanes = fleet[:offering_lanes] || fleet['offering_lanes'] || {}
+        offering_lanes[key] || offering_lanes[key.to_s]
+      end
+
+      def self.model_worker_actor_name(request_type:, model:, lane_style:, offering_instance_id:)
+        return :"model_worker_#{request_type}_#{model.tr(':.', '__')}" if lane_style.to_s == 'shared'
+
+        suffix = [lane_style, request_type, model, offering_instance_id].compact.join('_')
+        :"model_worker_#{actor_suffix(suffix)}"
+      end
+
+      def self.actor_suffix(value)
+        value.to_s.downcase.gsub(/[^a-z0-9]+/, '_').gsub(/\A_+|_+\z/, '')
       end
     end
   end
