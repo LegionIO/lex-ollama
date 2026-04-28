@@ -9,18 +9,33 @@ RSpec.describe Legion::Extensions::Ollama do
     expect(Legion::Extensions::Ollama::VERSION).to match(/\A\d+\.\d+\.\d+\z/)
   end
 
-  it 'defaults fleet endpoint scheduling to basic_get' do
-    settings = described_class.default_settings
+  describe '.default_settings' do
+    it 'defaults endpoint fleet participation off with basic_get as the scheduler' do
+      settings = described_class.default_settings
 
-    expect(settings.dig(:fleet, :scheduler)).to eq(:basic_get)
-    expect(settings.dig(:fleet, :endpoint, :empty_lane_backoff_ms)).to eq(250)
+      expect(settings.dig(:fleet, :scheduler)).to eq(:basic_get)
+      expect(settings.dig(:fleet, :endpoint, :enabled)).to be(false)
+      expect(settings.dig(:fleet, :endpoint, :empty_lane_backoff_ms)).to eq(250)
+    end
+
+    it 'keeps exact offering lanes disabled by default' do
+      settings = described_class.default_settings
+
+      expect(settings.dig(:fleet, :offering_lanes, :enabled)).to be(false)
+      expect(settings.dig(:fleet, :offering_lanes, :instance_id)).to be_nil
+    end
   end
 
-  it 'keeps exact offering lanes disabled by default' do
-    settings = described_class.default_settings
+  describe '.valid_fleet_subscriptions' do
+    it 'accepts string and symbol keyed subscription hashes' do
+      subscriptions = [
+        { type: 'embed', model: 'nomic-embed-text' },
+        { 'type' => 'chat', 'model' => 'qwen3.6:27b' },
+        { type: 'chat' }
+      ]
 
-    expect(settings.dig(:fleet, :offering_lanes, :enabled)).to be(false)
-    expect(settings.dig(:fleet, :offering_lanes, :instance_id)).to be_nil
+      expect(described_class.valid_fleet_subscriptions(subscriptions).size).to eq(2)
+    end
   end
 
   describe '.sorted_subscriptions' do

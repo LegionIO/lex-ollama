@@ -14,6 +14,12 @@ require 'legion/extensions/ollama/runners/version'
 require 'legion/extensions/ollama/runners/fleet'
 require 'legion/extensions/ollama/client'
 
+begin
+  require 'legion/extensions/llm'
+rescue LoadError
+  nil
+end
+
 # Fleet transport and actor wiring — only loaded when Legion::Extensions::Core is present
 # so the gem still works as a standalone HTTP client without any AMQP runtime.
 if Legion::Extensions.const_defined?(:Core, false)
@@ -21,6 +27,7 @@ if Legion::Extensions.const_defined?(:Core, false)
   require 'legion/extensions/ollama/transport/messages/llm_response'
   require 'legion/extensions/ollama/transport'
   require 'legion/extensions/ollama/actors/model_worker'
+  require 'legion/extensions/ollama/actors/endpoint_puller'
   require 'legion/extensions/ollama/actors/model_sync'
 end
 
@@ -33,14 +40,21 @@ module Legion
         {
           s3:    {},
           fleet: {
-            scheduler:      :basic_get,
-            endpoint:       {
+            consumer_priority:       0,
+            scheduler:               :basic_get,
+            queue_expires_ms:        60_000,
+            message_ttl_ms:          120_000,
+            queue_max_length:        100,
+            delivery_limit:          3,
+            consumer_ack_timeout_ms: 300_000,
+            endpoint:                {
               enabled:                        false,
               empty_lane_backoff_ms:          250,
               idle_backoff_ms:                1_000,
-              max_consecutive_pulls_per_lane: 0
+              max_consecutive_pulls_per_lane: 0,
+              accept_when:                    []
             },
-            offering_lanes: {
+            offering_lanes:          {
               enabled:     false,
               instance_id: nil
             }
@@ -55,12 +69,19 @@ module Legion
         super
         @actors.delete(:model_worker)
 
-        subs = settings[:subscriptions]
+        subs = setting_value(settings, :subscriptions)
+        valid_subscriptions = valid_fleet_subscriptions(subs)
+        endpoint_configured = fleet_scheduler == :basic_get &&
+                              nested_setting(settings, :fleet, :endpoint, :enabled) == true &&
+                              valid_subscriptions.any?
+        @actors.delete(:endpoint_puller) unless endpoint_configured
+
         return unless subs.is_a?(Array)
+        return if fleet_scheduler == :basic_get
 
         sorted_subscriptions(subs).each do |sub|
-          request_type = sub[:type]&.to_s
-          model        = sub[:model]&.to_s
+          request_type = setting_value(sub, :type)&.to_s
+          model = setting_value(sub, :model)&.to_s
           context_window = context_window_for(sub)
           next unless request_type && model
 
@@ -76,21 +97,22 @@ module Legion
 
       def self.sorted_subscriptions(subscriptions)
         subscriptions.sort_by do |sub|
-          type = sub[:type].to_s
+          type = setting_value(sub, :type).to_s
           [
             type == 'embed' ? 0 : 1,
             context_window_for(sub) || Float::INFINITY,
-            sub[:model].to_s
+            setting_value(sub, :model).to_s
           ]
         end
       end
 
       def self.context_window_for(subscription)
-        raw = subscription[:context_window] ||
-              subscription[:max_context] ||
-              subscription[:max_input_tokens] ||
-              subscription.dig(:limits, :context_window) ||
-              subscription.dig(:limits, :max_input_tokens)
+        limits = setting_value(subscription, :limits) || {}
+        raw = setting_value(subscription, :context_window) ||
+              setting_value(subscription, :max_context) ||
+              setting_value(subscription, :max_input_tokens) ||
+              setting_value(limits, :context_window) ||
+              setting_value(limits, :max_input_tokens)
         return nil if raw.nil? || raw.to_s.empty?
 
         Integer(raw)
@@ -130,12 +152,9 @@ module Legion
       def self.offering_instance_for(subscription)
         return nil unless offering_lanes_enabled?
 
-        raw = subscription[:offering_instance_id] ||
-              subscription['offering_instance_id'] ||
-              subscription[:provider_instance] ||
-              subscription['provider_instance'] ||
-              subscription[:instance_id] ||
-              subscription['instance_id'] ||
+        raw = setting_value(subscription, :offering_instance_id) ||
+              setting_value(subscription, :provider_instance) ||
+              setting_value(subscription, :instance_id) ||
               fleet_offering_lane_setting(:instance_id) ||
               fleet_offering_lane_setting(:provider_instance) ||
               fleet_offering_lane_setting(:offering_instance_id)
@@ -152,9 +171,8 @@ module Legion
       end
 
       def self.fleet_offering_lane_setting(key)
-        fleet = settings[:fleet] || settings['fleet'] || {}
-        offering_lanes = fleet[:offering_lanes] || fleet['offering_lanes'] || {}
-        offering_lanes[key] || offering_lanes[key.to_s]
+        offering_lanes = nested_setting(settings, :fleet, :offering_lanes) || {}
+        setting_value(offering_lanes, key)
       end
 
       def self.model_worker_actor_name(request_type:, model:, lane_style:, offering_instance_id:)
@@ -166,6 +184,35 @@ module Legion
 
       def self.actor_suffix(value)
         value.to_s.downcase.gsub(/[^a-z0-9]+/, '_').gsub(/\A_+|_+\z/, '')
+      end
+
+      def self.fleet_scheduler
+        (nested_setting(settings, :fleet, :scheduler) || :basic_get).to_sym
+      end
+
+      def self.valid_fleet_subscriptions(subscriptions)
+        return [] unless subscriptions.is_a?(Array)
+
+        subscriptions.select do |sub|
+          setting_value(sub, :type) && setting_value(sub, :model)
+        end
+      end
+
+      def self.setting_value(hash, key)
+        return nil unless hash.respond_to?(:key?)
+
+        string_key = key.to_s
+        return hash[string_key] if hash.key?(string_key)
+
+        hash[key] if hash.key?(key)
+      end
+
+      def self.nested_setting(hash, *keys)
+        keys.reduce(hash) do |current, key|
+          return nil unless current.respond_to?(:key?)
+
+          setting_value(current, key)
+        end
       end
     end
   end

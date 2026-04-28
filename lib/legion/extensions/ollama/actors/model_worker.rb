@@ -26,6 +26,8 @@ module Legion
         # Queue names and routing keys follow the shared fleet lane schema:
         #   llm.fleet.embed.<model-slug>
         #   llm.fleet.inference.<model-slug>.ctx<context-window>
+        # or, when explicitly enabled, exact offering lanes:
+        #   llm.fleet.offering.<instance>.<model-slug>.<operation>
         class ModelWorker < Legion::Extensions::Actors::Subscription
           POLLING_SCHEDULERS = %i[basic_get poll polling].freeze
           SUBSCRIPTION_SCHEDULERS = %i[subscribe subscription basic_consume consumer].freeze
@@ -36,7 +38,7 @@ module Legion
           def initialize(request_type:, model:, context_window: nil, lane_style: :shared,
                          offering_instance_id: nil, **)
             @request_type = request_type.to_s
-            @model_name   = model.to_s
+            @model_name = model.to_s
             @context_window = normalize_context_window(context_window)
             @lane_style = lane_style.to_s
             @offering_instance_id = offering_instance_id&.to_s
@@ -72,7 +74,27 @@ module Legion
           # Standard scale: GPU server = 10, Mac Studio = 5, developer laptop = 1.
           # Defaults to 0 (equal priority) if not configured.
           def consumer_priority
-            settings.dig(:fleet, :consumer_priority) || 0
+            setting_value(fleet_settings, :consumer_priority) || 0
+          end
+
+          def queue_expires_ms
+            setting_value(fleet_settings, :queue_expires_ms) || 60_000
+          end
+
+          def message_ttl_ms
+            setting_value(fleet_settings, :message_ttl_ms) || 120_000
+          end
+
+          def queue_max_length
+            setting_value(fleet_settings, :queue_max_length) || 100
+          end
+
+          def delivery_limit
+            setting_value(fleet_settings, :delivery_limit) || 3
+          end
+
+          def consumer_ack_timeout_ms
+            setting_value(fleet_settings, :consumer_ack_timeout_ms) || 300_000
           end
 
           # Subscribe options include x-priority argument so RabbitMQ can honour
@@ -118,7 +140,7 @@ module Legion
             return true if POLLING_SCHEDULERS.include?(scheduler)
             return false if SUBSCRIPTION_SCHEDULERS.include?(scheduler)
 
-            settings.dig(:fleet, :endpoint, :enabled) == true
+            nested_setting(settings, :fleet, :endpoint, :enabled) == true
           rescue StandardError
             false
           end
@@ -126,6 +148,7 @@ module Legion
           def lane_key
             @lane_key ||= offering_lane? ? offering_lane_key : shared_lane_key
           end
+          alias routing_key lane_key
 
           def run_basic_get_loop
             consecutive_pulls = 0
@@ -148,12 +171,40 @@ module Legion
             true
           end
 
-          # Returns a queue CLASS (not instance) bound to the llm.request exchange
-          # with the routing key for this worker's (type, model) pair.
+          # Returns a queue CLASS (not instance) bound to the llm.fleet exchange
+          # with the routing key for this worker's model lane.
           # The Subscription base class calls queue.new in initialize, so this must
           # return a class, not an instance.
           def queue
             @queue ||= build_queue_class
+          end
+
+          def self.queue_class_for(request_type:, model:, context_window: nil, queue_config: {},
+                                   lane_style: :shared, offering_instance_id: nil)
+            worker = allocate
+            worker.instance_variable_set(:@request_type, request_type.to_s)
+            worker.instance_variable_set(:@model_name, model.to_s)
+            worker.instance_variable_set(:@context_window, context_window&.to_i)
+            worker.instance_variable_set(:@lane_style, lane_style.to_s)
+            worker.instance_variable_set(:@offering_instance_id, offering_instance_id&.to_s)
+            worker.send(:build_queue_class, queue_config)
+          end
+
+          def self.fallback_queue_options(settings)
+            {
+              durable:     true,
+              auto_delete: false,
+              arguments:   {
+                'x-queue-type'           => 'quorum',
+                'x-queue-leader-locator' => 'balanced',
+                'x-expires'              => settings.fetch(:queue_expires_ms),
+                'x-message-ttl'          => settings.fetch(:message_ttl_ms),
+                'x-overflow'             => 'reject-publish',
+                'x-max-length'           => settings.fetch(:queue_max_length),
+                'x-delivery-limit'       => settings.fetch(:delivery_limit),
+                'x-consumer-timeout'     => settings.fetch(:consumer_ack_timeout_ms)
+              }
+            }
           end
 
           # Enrich every inbound message with the worker's own request_type and model
@@ -161,40 +212,44 @@ module Legion
           # them. Also defaults message_context to {} if absent.
           def process_message(payload, metadata, delivery_info)
             msg = super
-            msg[:request_type]    ||= @request_type
-            msg[:model]           ||= @model_name
+            msg[:request_type] ||= @request_type
+            msg[:model] ||= @model_name
             msg[:message_context] ||= {}
             msg
           end
 
           private
 
-          def build_queue_class
-            routing_key     = lane_key
-            exchange_class  = Transport::Exchanges::LlmRequest
+          def build_queue_class(queue_config = {})
+            lane_key = self.lane_key
+            exchange_class = Transport::Exchanges::LlmRequest
+            queue_settings = {
+              queue_expires_ms:        queue_expires_ms,
+              message_ttl_ms:          message_ttl_ms,
+              queue_max_length:        queue_max_length,
+              delivery_limit:          delivery_limit,
+              consumer_ack_timeout_ms: consumer_ack_timeout_ms
+            }.merge((queue_config || {}).compact)
+
+            if defined?(::Legion::Extensions::Llm::Transport::FleetLane)
+              return ::Legion::Extensions::Llm::Transport::FleetLane.build_queue_class(
+                queue_name:       lane_key,
+                exchange_class:   exchange_class,
+                routing_key:      lane_key,
+                base_queue_class: Legion::Transport::Queue,
+                settings:         queue_settings
+              )
+            end
+
+            queue_options = self.class.fallback_queue_options(queue_settings)
 
             Class.new(Legion::Transport::Queue) do
-              define_method(:queue_name) { routing_key }
-              define_method(:queue_options) do
-                {
-                  durable:     true,
-                  auto_delete: false,
-                  arguments:   {
-                    'x-queue-type'           => 'quorum',
-                    'x-queue-leader-locator' => 'balanced',
-                    'x-expires'              => 60_000,
-                    'x-message-ttl'          => 120_000,
-                    'x-overflow'             => 'reject-publish',
-                    'x-max-length'           => 100,
-                    'x-delivery-limit'       => 3,
-                    'x-consumer-timeout'     => 300_000
-                  }
-                }
-              end
+              define_method(:queue_name) { lane_key }
+              define_method(:queue_options) { queue_options }
               define_method(:dlx_enabled) { false }
               define_method(:initialize) do
                 super()
-                bind(exchange_class.new, routing_key: routing_key)
+                bind(exchange_class.new, routing_key: lane_key)
               end
             end
           end
@@ -221,16 +276,39 @@ module Legion
             @queue.acknowledge(delivery_info.delivery_tag) if manual_ack
           end
 
+          def fleet_settings
+            setting_value(settings, :fleet) || {}
+          rescue NameError
+            {}
+          end
+
           def fleet_scheduler
-            (settings.dig(:fleet, :scheduler) || :basic_get).to_sym
+            (setting_value(fleet_settings, :scheduler) || :basic_get).to_sym
+          end
+
+          def setting_value(hash, key)
+            return nil unless hash.respond_to?(:key?)
+
+            string_key = key.to_s
+            return hash[string_key] if hash.key?(string_key)
+
+            hash[key] if hash.key?(key)
+          end
+
+          def nested_setting(hash, *keys)
+            keys.reduce(hash) do |current, key|
+              return nil unless current.respond_to?(:key?)
+
+              setting_value(current, key)
+            end
           end
 
           def lane_kind
-            @request_type == 'embed' ? 'embed' : 'inference'
+            %w[embed embedding embeddings].include?(@request_type) ? 'embed' : 'inference'
           end
 
-          def model_slug
-            sanitize_segment(@model_name).tr('.', '-')
+          def sanitized_model
+            sanitize_segment(@model_name)
           end
 
           def offering_lane?
@@ -238,7 +316,7 @@ module Legion
           end
 
           def shared_lane_key
-            parts = ['llm.fleet', lane_kind, model_slug]
+            parts = ['llm.fleet', lane_kind, sanitized_model]
             parts << "ctx#{@context_window}" if lane_kind == 'inference' && @context_window
             parts.join('.')
           end
@@ -249,13 +327,13 @@ module Legion
               'fleet',
               'offering',
               public_segment(:offering_instance_id, @offering_instance_id),
-              model_slug,
+              sanitized_model,
               lane_kind
             ].join('.')
           end
 
           def sanitize_segment(value)
-            value.to_s.downcase.gsub(/[^a-z0-9]+/, '-').gsub(/\A-+|-+\z/, '')
+            value.to_s.downcase.gsub(/[^a-z0-9]+/, '-').gsub(/\A-+|-+\z/, '').squeeze('-')
           end
 
           def public_segment(label, value)
@@ -275,21 +353,21 @@ module Legion
           end
 
           def empty_lane_backoff
-            milliseconds = settings.dig(:fleet, :endpoint, :empty_lane_backoff_ms) || 250
+            milliseconds = nested_setting(settings, :fleet, :endpoint, :empty_lane_backoff_ms) || 250
             milliseconds.to_f / 1000.0
           rescue StandardError
             0.25
           end
 
           def idle_backoff
-            milliseconds = settings.dig(:fleet, :endpoint, :idle_backoff_ms) || 1_000
+            milliseconds = nested_setting(settings, :fleet, :endpoint, :idle_backoff_ms) || 1_000
             milliseconds.to_f / 1000.0
           rescue StandardError
             1.0
           end
 
           def max_consecutive_pulls_per_lane
-            Integer(settings.dig(:fleet, :endpoint, :max_consecutive_pulls_per_lane) || 0)
+            Integer(nested_setting(settings, :fleet, :endpoint, :max_consecutive_pulls_per_lane) || 0)
           rescue StandardError
             0
           end
