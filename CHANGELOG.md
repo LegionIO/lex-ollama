@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.3.9] - 2026-04-28
+
+### Fixed
+- Declare explicit shared Legion JSON, logging, and settings dependencies used by the legacy Ollama extension during the LLM uplift transition.
+
 ## [0.3.8] - 2026-04-28
 
 ### Added
