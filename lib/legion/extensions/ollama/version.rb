@@ -3,7 +3,7 @@
 module Legion
   module Extensions
     module Ollama
-      VERSION = '0.3.6'
+      VERSION = '0.3.7'
     end
   end
 end

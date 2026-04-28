@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.3.7] - 2026-04-28
+
+### Fixed
+- Declare the `legion-llm` runtime dependency required by the fleet exchange, response, and error classes inherited by lex-ollama fleet workers.
+
 ## [0.3.6] - 2026-04-28
 
 ### Added

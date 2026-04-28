@@ -27,5 +27,6 @@ Gem::Specification.new do |spec|
   spec.require_paths = ['lib']
 
   spec.add_dependency 'faraday', '>= 2.0'
+  spec.add_dependency 'legion-llm', '>= 0.8.32'
   spec.add_dependency 'lex-s3', '>= 0.2'
 end
