@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.5] - 2026-04-28
+
+### Changed
+- `Actor::ModelWorker` now defaults endpoint fleet workers to explicit `basic_get` polling with a process-wide lane lock so local one-model-at-a-time devices do not reserve messages from multiple model queues; GPU/datacenter workers can opt back into RabbitMQ subscriptions with `legion.ollama.fleet.scheduler: :subscription`
+- Fleet worker queue names and routing keys now use shared `llm.fleet.*` lanes (`llm.fleet.embed.<model>` and `llm.fleet.inference.<model>.ctx<context>`) instead of legacy `llm.request.ollama.*` keys
+- `Ollama.build_actors` now orders generated model workers with embeddings first, then inference/chat workers from smallest to largest configured context window
+
 ## [0.3.4] - 2026-04-24
 
 ### Fixed

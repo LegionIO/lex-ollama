@@ -41,6 +41,22 @@ RSpec.describe Legion::Extensions::Ollama::Actor::ModelWorker do
     end
   end
 
+  describe '#endpoint_polling?' do
+    it 'defaults to basic_get polling' do
+      worker = worker_class.allocate
+      allow(worker).to receive(:settings).and_return({})
+
+      expect(worker.endpoint_polling?).to be(true)
+    end
+
+    it 'allows subscription scheduler mode for GPU workers' do
+      worker = worker_class.allocate
+      allow(worker).to receive(:settings).and_return({ fleet: { scheduler: :subscription } })
+
+      expect(worker.endpoint_polling?).to be(false)
+    end
+  end
+
   describe '#consumer_priority' do
     context 'when no fleet priority is configured' do
       it 'returns 0' do
@@ -137,18 +153,39 @@ RSpec.describe Legion::Extensions::Ollama::Actor::ModelWorker do
     end
   end
 
-  describe 'routing key convention' do
-    it 'forms the expected routing key for an embed model' do
-      sanitised_model = 'nomic-embed-text'.tr(':', '.')
-      routing_key = "llm.request.ollama.embed.#{sanitised_model}"
-      expect(routing_key).to eq('llm.request.ollama.embed.nomic-embed-text')
+  describe '#lane_key' do
+    it 'forms the shared fleet lane key for an embed model' do
+      worker = worker_class.allocate
+      worker.instance_variable_set(:@request_type, 'embed')
+      worker.instance_variable_set(:@model_name, 'nomic-embed-text:latest')
+
+      expect(worker.lane_key).to eq('llm.fleet.embed.nomic-embed-text-latest')
     end
 
-    it 'converts colons to dots in routing key for versioned models' do
-      model = 'qwen3.5:27b'
-      sanitised = model.tr(':', '.')
-      routing_key = "llm.request.ollama.chat.#{sanitised}"
-      expect(routing_key).to eq('llm.request.ollama.chat.qwen3.5.27b')
+    it 'forms the shared fleet lane key for inference with context' do
+      worker = worker_class.allocate
+      worker.instance_variable_set(:@request_type, 'chat')
+      worker.instance_variable_set(:@model_name, 'qwen3.5:27b')
+      worker.instance_variable_set(:@context_window, 32_768)
+
+      expect(worker.lane_key).to eq('llm.fleet.inference.qwen3-5-27b.ctx32768')
+    end
+  end
+
+  describe '#queue' do
+    it 'builds a durable fleet lane queue bound to the lane routing key' do
+      worker = worker_class.allocate
+      worker.instance_variable_set(:@request_type, 'chat')
+      worker.instance_variable_set(:@model_name, 'qwen3.5:27b')
+      worker.instance_variable_set(:@context_window, 32_768)
+
+      queue_class = worker.queue
+      queue = queue_class.allocate
+
+      expect(queue.queue_name).to eq('llm.fleet.inference.qwen3-5-27b.ctx32768')
+      expect(queue.queue_options[:durable]).to be(true)
+      expect(queue.queue_options[:auto_delete]).to be(false)
+      expect(queue.queue_options[:arguments]['x-queue-type']).to eq('quorum')
     end
   end
 end

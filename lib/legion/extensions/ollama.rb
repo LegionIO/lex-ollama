@@ -32,7 +32,15 @@ module Legion
       def self.default_settings
         {
           s3:    {},
-          fleet: {}
+          fleet: {
+            scheduler: :basic_get,
+            endpoint:  {
+              enabled:                        false,
+              empty_lane_backoff_ms:          250,
+              idle_backoff_ms:                1_000,
+              max_consecutive_pulls_per_lane: 0
+            }
+          }
         }
       end
 
@@ -46,14 +54,17 @@ module Legion
         subs = settings[:subscriptions]
         return unless subs.is_a?(Array)
 
-        subs.each do |sub|
+        sorted_subscriptions(subs).each do |sub|
           request_type = sub[:type]&.to_s
           model        = sub[:model]&.to_s
+          context_window = context_window_for(sub)
           next unless request_type && model
 
           actor_name   = :"model_worker_#{request_type}_#{model.tr(':.', '__')}"
           worker_class = Class.new(Legion::Extensions::Ollama::Actor::ModelWorker) do
-            define_method(:initialize) { super(request_type: request_type, model: model) }
+            define_method(:initialize) do
+              super(request_type: request_type, model: model, context_window: context_window)
+            end
           end
 
           @actors[actor_name] = {
@@ -64,6 +75,30 @@ module Legion
             type:           'literal'
           }
         end
+      end
+
+      def self.sorted_subscriptions(subscriptions)
+        subscriptions.sort_by do |sub|
+          type = sub[:type].to_s
+          [
+            type == 'embed' ? 0 : 1,
+            context_window_for(sub) || Float::INFINITY,
+            sub[:model].to_s
+          ]
+        end
+      end
+
+      def self.context_window_for(subscription)
+        raw = subscription[:context_window] ||
+              subscription[:max_context] ||
+              subscription[:max_input_tokens] ||
+              subscription.dig(:limits, :context_window) ||
+              subscription.dig(:limits, :max_input_tokens)
+        return nil if raw.nil? || raw.to_s.empty?
+
+        Integer(raw)
+      rescue ArgumentError, TypeError
+        nil
       end
     end
   end
