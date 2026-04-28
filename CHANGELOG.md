@@ -1,10 +1,42 @@
 # Changelog
 
-## [0.3.5] - 2026-04-25
+## [0.3.10] - 2026-04-28
+
+### Fixed
+- Require `lex-llm >= 0.1.6` so registry availability publishing always has the shared `RegistryEvent` envelope implementation it depends on.
+
+## [0.3.9] - 2026-04-28
+
+### Fixed
+- Declare explicit shared Legion JSON, logging, and settings dependencies used by the legacy Ollama extension during the LLM uplift transition.
+
+## [0.3.8] - 2026-04-28
+
+### Added
+- Publish nonblocking `llm.registry` availability, unavailability, heartbeat, and degraded events from `Actor::ModelWorker` using `lex-llm` `Legion::Extensions::Llm::Routing::RegistryEvent` envelopes when transport is available.
+- Add local `Transport::Exchanges::LlmRegistry` and `Transport::Messages::RegistryEvent` wrappers for `llm.registry` topic publishing without requiring a database.
+
+## [0.3.7] - 2026-04-28
+
+### Fixed
+- Declare the `legion-llm` runtime dependency required by the fleet exchange, response, and error classes inherited by lex-ollama fleet workers.
+
+## [0.3.6] - 2026-04-28
+
+### Added
+- `Actor::ModelWorker` can now bind opt-in exact offering lanes compatible with legion-llm's `llm.fleet.offering.<instance>.<model>.<operation>` routing style while preserving the existing shared `llm.fleet.*` lanes
+- `legion.ollama.fleet.offering_lanes` settings default to disabled with no instance id, so existing shared-lane fleet workers keep their current behavior unless exact offering lanes are explicitly enabled
+
+## [0.3.5] - 2026-04-28
 
 ### Added
 - Fleet model workers now bind transient classic queues to shared `llm.fleet` model lanes, with configurable consumer priority, queue expiration, and message TTL.
 - Subscription entries can provide a context window so inference workers bind lanes like `llm.fleet.inference.qwen3-5-27b.ctx32768`.
+
+### Changed
+- `Actor::ModelWorker` now defaults endpoint fleet workers to explicit `basic_get` polling with a process-wide lane lock so local one-model-at-a-time devices do not reserve messages from multiple model queues; GPU/datacenter workers can opt back into RabbitMQ subscriptions with `legion.ollama.fleet.scheduler: :subscription`
+- Fleet worker queue names and routing keys now use shared `llm.fleet.*` lanes (`llm.fleet.embed.<model>` and `llm.fleet.inference.<model>.ctx<context>`) instead of legacy `llm.request.ollama.*` keys
+- `Ollama.build_actors` now orders generated model workers with embeddings first, then inference/chat workers from smallest to largest configured context window
 
 ## [0.3.4] - 2026-04-24
 

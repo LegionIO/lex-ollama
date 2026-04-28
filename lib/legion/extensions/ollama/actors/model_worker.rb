@@ -4,8 +4,12 @@ module Legion
   module Extensions
     module Ollama
       module Actor
-        # Subscription actor that listens on a model-scoped queue and forwards
+        # Fleet actor that listens on a model-scoped queue and forwards
         # inbound LLM request messages to Runners::Fleet#handle_request.
+        # Endpoint workers default to explicit basic_get polling so a local
+        # one-model-at-a-time device does not reserve messages from every lane.
+        # Set legion.ollama.fleet.scheduler to :subscription for GPU/datacenter
+        # workers that should use RabbitMQ consumer priority and prefetch.
         #
         # One instance is created per (request_type, model) entry in settings:
         #
@@ -19,17 +23,27 @@ module Legion
         #         - type: chat
         #           model: "qwen3.5:27b"
         #
-        # The queue name and routing key both follow shared fleet lane schemas:
-        #   llm.fleet.embed.<model>
-        #   llm.fleet.inference.<model>.ctx<context_window>
-        # when an inference context window is known.
+        # Queue names and routing keys follow the shared fleet lane schema:
+        #   llm.fleet.embed.<model-slug>
+        #   llm.fleet.inference.<model-slug>.ctx<context-window>
+        # or, when explicitly enabled, exact offering lanes:
+        #   llm.fleet.offering.<instance>.<model-slug>.<operation>
         class ModelWorker < Legion::Extensions::Actors::Subscription
-          attr_reader :request_type, :model_name, :context_window
+          POLLING_SCHEDULERS = %i[basic_get poll polling].freeze
+          SUBSCRIPTION_SCHEDULERS = %i[subscribe subscription basic_consume consumer].freeze
+          POLL_LOCK = Mutex.new
+          REGISTRY_HEARTBEAT_INTERVAL = 30.0
 
-          def initialize(request_type:, model:, context_window: nil, **)
-            @request_type    = request_type.to_s
-            @model_name      = model.to_s
-            @context_window  = context_window&.to_i
+          attr_reader :request_type, :model_name, :context_window, :offering_instance_id
+
+          def initialize(request_type:, model:, context_window: nil, lane_style: :shared,
+                         offering_instance_id: nil, **)
+            @request_type = request_type.to_s
+            @model_name = model.to_s
+            @context_window = normalize_context_window(context_window)
+            @lane_style = lane_style.to_s
+            @offering_instance_id = offering_instance_id&.to_s
+            @polling = false
             super(**)
           end
 
@@ -95,19 +109,94 @@ module Legion
             base.merge(arguments: { 'x-priority' => consumer_priority })
           end
 
+          def prepare
+            return super unless endpoint_polling?
+
+            @queue = queue.new
+            @polling = true
+            log.info "[ModelWorker] prepared polling lane #{lane_key}" if defined?(log)
+          rescue StandardError => e
+            handle_exception(e, level: :fatal)
+          end
+
+          def activate
+            result = if endpoint_polling?
+                       @polling = true
+                       @poll_task = async.run_basic_get_loop
+                       log.info "[ModelWorker] activated polling lane #{lane_key}" if defined?(log)
+                       @poll_task
+                     else
+                       super
+                     end
+            publish_registry_event_async(:available)
+            start_registry_heartbeat
+            result
+          rescue StandardError => e
+            publish_registry_event_async(:degraded, error: e)
+            handle_exception(e, level: :fatal)
+          end
+
+          def cancel
+            @polling = false
+            stop_registry_heartbeat
+            publish_registry_event_async(:unavailable)
+            return true unless instance_variable_defined?(:@consumer) && @consumer
+
+            super
+          end
+
+          def endpoint_polling?
+            scheduler = fleet_scheduler
+            return true if POLLING_SCHEDULERS.include?(scheduler)
+            return false if SUBSCRIPTION_SCHEDULERS.include?(scheduler)
+
+            nested_setting(settings, :fleet, :endpoint, :enabled) == true
+          rescue StandardError
+            false
+          end
+
+          def lane_key
+            @lane_key ||= offering_lane? ? offering_lane_key : shared_lane_key
+          end
+          alias routing_key lane_key
+
+          def run_basic_get_loop
+            consecutive_pulls = 0
+            while @polling && !shutting_down?
+              pulled = POLL_LOCK.synchronize { pull_one_message }
+              consecutive_pulls = pulled ? consecutive_pulls + 1 : 0
+              sleep(pulled ? post_pull_backoff(consecutive_pulls) : empty_lane_backoff)
+            end
+          end
+
+          def pull_one_message
+            delivery_info, metadata, payload = @queue.pop(manual_ack: manual_ack)
+            return false unless delivery_info
+
+            handle_delivery(delivery_info, metadata, payload)
+            true
+          rescue StandardError => e
+            handle_exception(e)
+            reject_or_retry(delivery_info, metadata, payload) if manual_ack && delivery_info
+            true
+          end
+
           # Returns a queue CLASS (not instance) bound to the llm.fleet exchange
-          # with the routing key for this worker's model offering lane.
+          # with the routing key for this worker's model lane.
           # The Subscription base class calls queue.new in initialize, so this must
           # return a class, not an instance.
           def queue
             @queue ||= build_queue_class
           end
 
-          def self.queue_class_for(request_type:, model:, context_window: nil, queue_config: {})
+          def self.queue_class_for(request_type:, model:, context_window: nil, queue_config: {},
+                                   lane_style: :shared, offering_instance_id: nil)
             worker = allocate
             worker.instance_variable_set(:@request_type, request_type.to_s)
             worker.instance_variable_set(:@model_name, model.to_s)
             worker.instance_variable_set(:@context_window, context_window&.to_i)
+            worker.instance_variable_set(:@lane_style, lane_style.to_s)
+            worker.instance_variable_set(:@offering_instance_id, offering_instance_id&.to_s)
             worker.send(:build_queue_class, queue_config)
           end
 
@@ -128,29 +217,199 @@ module Legion
             }
           end
 
-          def routing_key
-            parts = ['llm.fleet', lane_kind, sanitized_model]
-            parts << "ctx#{@context_window}" if lane_kind == 'inference' && @context_window
-            parts.join('.')
-          end
-
           # Enrich every inbound message with the worker's own request_type and model
           # so Runners::Fleet#handle_request always has them, even if the sender omitted
           # them. Also defaults message_context to {} if absent.
           def process_message(payload, metadata, delivery_info)
             msg = super
-            msg[:request_type]    ||= @request_type
-            msg[:model]           ||= @model_name
+            msg[:request_type] ||= @request_type
+            msg[:model] ||= @model_name
             msg[:message_context] ||= {}
             msg
           end
 
           private
 
+          def start_registry_heartbeat
+            return unless registry_publishing_available?
+            return if @registry_heartbeat_thread&.alive?
+
+            @registry_heartbeat_running = true
+            @registry_heartbeat_thread = Thread.new do
+              Thread.current.abort_on_exception = false
+              while @registry_heartbeat_running && !shutting_down?
+                sleep registry_heartbeat_interval
+                publish_registry_event(:heartbeat) if @registry_heartbeat_running && !shutting_down?
+              end
+            rescue StandardError => e
+              log_registry_publish_failure(e, level: :debug)
+            end
+          rescue StandardError => e
+            log_registry_publish_failure(e, level: :debug)
+          end
+
+          def stop_registry_heartbeat
+            @registry_heartbeat_running = false
+            @registry_heartbeat_thread&.kill if @registry_heartbeat_thread&.alive?
+          end
+
+          def registry_heartbeat_interval
+            configured = nested_setting(settings, :fleet, :registry, :heartbeat_interval_seconds) ||
+                         nested_setting(settings, :fleet, :registry_heartbeat_interval_seconds)
+            interval = configured.nil? ? REGISTRY_HEARTBEAT_INTERVAL : Float(configured)
+            interval.positive? ? interval : REGISTRY_HEARTBEAT_INTERVAL
+          rescue StandardError
+            REGISTRY_HEARTBEAT_INTERVAL
+          end
+
+          def publish_registry_event_async(kind, error: nil)
+            return unless registry_publishing_available?
+
+            Thread.new do
+              Thread.current.abort_on_exception = false
+              publish_registry_event(kind, error: error)
+            rescue StandardError => e
+              log_registry_publish_failure(e, level: :debug)
+            end
+          rescue StandardError => e
+            log_registry_publish_failure(e, level: :debug)
+          end
+
+          def publish_registry_event(kind, error: nil)
+            event = registry_event_for(kind, error: error)
+            Transport::Messages::RegistryEvent.new(event: event).publish(spool: false)
+          rescue StandardError => e
+            log_registry_publish_failure(e)
+          end
+
+          def registry_event_for(kind, error: nil)
+            registry_event_class.public_send(
+              registry_event_method(kind),
+              registry_offering,
+              runtime:  registry_runtime,
+              capacity: registry_capacity,
+              health:   registry_health(kind, error: error),
+              lane:     lane_key,
+              metadata: registry_metadata
+            )
+          end
+
+          def registry_event_method(kind)
+            case kind.to_sym
+            when :available then :available
+            when :unavailable then :unavailable
+            when :heartbeat then :heartbeat
+            else :degraded
+            end
+          end
+
+          def registry_offering
+            limits = {}
+            limits[:context_window] = @context_window if @context_window
+            {
+              provider_family:   :ollama,
+              provider_instance: registry_provider_instance,
+              transport:         :rabbitmq,
+              model:             @model_name,
+              usage_type:        registry_usage_type,
+              capabilities:      registry_capabilities,
+              limits:            limits,
+              routing_metadata:  { lane: lane_key },
+              metadata:          { lex: :ollama, lane_style: @lane_style || 'shared' }
+            }
+          end
+
+          def registry_runtime
+            {
+              node:      registry_provider_instance,
+              scheduler: fleet_scheduler,
+              polling:   endpoint_polling?
+            }
+          end
+
+          def registry_capacity
+            {
+              concurrency:       1,
+              consumer_priority: consumer_priority,
+              queue_max_length:  queue_max_length
+            }
+          end
+
+          def registry_health(kind, error: nil)
+            health = {
+              ready:  %i[available heartbeat].include?(kind.to_sym),
+              status: registry_health_status(kind)
+            }
+            health[:error_class] = error.class.name if error
+            health[:error] = error.message if error
+            health
+          end
+
+          def registry_health_status(kind)
+            case kind.to_sym
+            when :available, :heartbeat then :available
+            when :unavailable then :unavailable
+            else :degraded
+            end
+          end
+
+          def registry_metadata
+            {
+              extension:    :lex_ollama,
+              request_type: @request_type,
+              lane_kind:    lane_kind
+            }
+          end
+
+          def registry_usage_type
+            lane_kind == 'embed' ? :embedding : :inference
+          end
+
+          def registry_capabilities
+            return %i[embedding] if lane_kind == 'embed'
+            return %i[completion] if @request_type == 'generate'
+
+            %i[chat]
+          end
+
+          def registry_provider_instance
+            @offering_instance_id || node_identity
+          end
+
+          def node_identity
+            return Legion::Settings.dig(:node, :canonical_name).to_s if defined?(Legion::Settings) &&
+                                                                        Legion::Settings.dig(:node, :canonical_name)
+
+            'unknown'
+          rescue StandardError
+            'unknown'
+          end
+
+          def registry_publishing_available?
+            defined?(::Legion::Transport) &&
+              defined?(::Legion::Extensions::Llm::Routing::RegistryEvent) &&
+              defined?(Transport::Messages::RegistryEvent)
+          end
+
+          def registry_event_class
+            ::Legion::Extensions::Llm::Routing::RegistryEvent
+          end
+
+          def log_registry_publish_failure(error, level: :warn)
+            message = "[ModelWorker] llm.registry publish failed lane=#{lane_key}: #{error.class}: #{error.message}"
+            if defined?(log) && log.respond_to?(level)
+              log.public_send(level, message)
+            elsif defined?(log) && log.respond_to?(:debug)
+              log.debug(message)
+            end
+          rescue StandardError
+            nil
+          end
+
           def build_queue_class(queue_config = {})
-            lane_key        = routing_key
-            exchange_class  = Transport::Exchanges::LlmRequest
-            queue_settings  = {
+            lane_key = self.lane_key
+            exchange_class = Transport::Exchanges::LlmRequest
+            queue_settings = {
               queue_expires_ms:        queue_expires_ms,
               message_ttl_ms:          message_ttl_ms,
               queue_max_length:        queue_max_length,
@@ -181,10 +440,36 @@ module Legion
             end
           end
 
+          def handle_delivery(delivery_info, metadata, payload)
+            message = process_message(payload, metadata, delivery_info)
+            fn = find_function(message)
+            log.debug "[ModelWorker] basic_get message received: #{lex_name}/#{fn}" if defined?(log)
+
+            affinity_result = check_region_affinity(message)
+            if affinity_result == :reject
+              log.warn '[ModelWorker] nack: region affinity mismatch' if defined?(log)
+              @queue.reject(delivery_info.delivery_tag) if manual_ack
+              return
+            end
+
+            record_cross_region_metric(message) if affinity_result == :remote
+
+            if use_runner?
+              dispatch_runner(message, runner_class, fn, check_subtask?, generate_task?)
+            else
+              runner_class.send(fn, **message)
+            end
+            @queue.acknowledge(delivery_info.delivery_tag) if manual_ack
+          end
+
           def fleet_settings
             setting_value(settings, :fleet) || {}
           rescue NameError
             {}
+          end
+
+          def fleet_scheduler
+            (setting_value(fleet_settings, :scheduler) || :basic_get).to_sym
           end
 
           def setting_value(hash, key)
@@ -196,12 +481,94 @@ module Legion
             hash[key] if hash.key?(key)
           end
 
+          def nested_setting(hash, *keys)
+            keys.reduce(hash) do |current, key|
+              return nil unless current.respond_to?(:key?)
+
+              setting_value(current, key)
+            end
+          end
+
           def lane_kind
             %w[embed embedding embeddings].include?(@request_type) ? 'embed' : 'inference'
           end
 
           def sanitized_model
-            @model_name.downcase.gsub(/[^a-z0-9]+/, '-').gsub(/\A-+|-+\z/, '').squeeze('-')
+            sanitize_segment(@model_name)
+          end
+
+          def offering_lane?
+            @lane_style == 'offering'
+          end
+
+          def shared_lane_key
+            parts = ['llm.fleet', lane_kind, sanitized_model]
+            parts << "ctx#{@context_window}" if lane_kind == 'inference' && @context_window
+            parts.join('.')
+          end
+
+          def offering_lane_key
+            [
+              'llm',
+              'fleet',
+              'offering',
+              public_segment(:offering_instance_id, @offering_instance_id),
+              sanitized_model,
+              lane_kind
+            ].join('.')
+          end
+
+          def sanitize_segment(value)
+            value.to_s.downcase.gsub(/[^a-z0-9]+/, '-').gsub(/\A-+|-+\z/, '').squeeze('-')
+          end
+
+          def public_segment(label, value)
+            segment = sanitize_segment(value)
+            raise ArgumentError, "#{label} is empty after sanitization" if segment.empty?
+            raise ArgumentError, "#{label} exceeds 64 characters" if segment.length > 64
+
+            segment
+          end
+
+          def normalize_context_window(value)
+            return nil if value.nil? || value.to_s.empty?
+
+            Integer(value)
+          rescue ArgumentError, TypeError
+            nil
+          end
+
+          def empty_lane_backoff
+            milliseconds = nested_setting(settings, :fleet, :endpoint, :empty_lane_backoff_ms) || 250
+            milliseconds.to_f / 1000.0
+          rescue StandardError
+            0.25
+          end
+
+          def idle_backoff
+            milliseconds = nested_setting(settings, :fleet, :endpoint, :idle_backoff_ms) || 1_000
+            milliseconds.to_f / 1000.0
+          rescue StandardError
+            1.0
+          end
+
+          def max_consecutive_pulls_per_lane
+            Integer(nested_setting(settings, :fleet, :endpoint, :max_consecutive_pulls_per_lane) || 0)
+          rescue StandardError
+            0
+          end
+
+          def post_pull_backoff(consecutive_pulls)
+            max_pulls = max_consecutive_pulls_per_lane
+            return 0 if max_pulls.zero? || consecutive_pulls < max_pulls
+
+            idle_backoff
+          end
+
+          def shutting_down?
+            defined?(Legion::Settings) && Legion::Settings.dig(:client, :shutting_down)
+          rescue StandardError
+            false
           end
         end
       end
