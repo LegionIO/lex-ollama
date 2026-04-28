@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.3.10] - 2026-04-28
+
+### Fixed
+- Require `lex-llm >= 0.1.6` so registry availability publishing always has the shared `RegistryEvent` envelope implementation it depends on.
+
 ## [0.3.9] - 2026-04-28
 
 ### Fixed

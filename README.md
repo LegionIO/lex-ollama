@@ -188,7 +188,7 @@ result[:usage]  # => { input_tokens: 1, output_tokens: 5, total_duration: ..., .
 
 ## Version
 
-0.3.9
+0.3.10
 
 ## License
 
