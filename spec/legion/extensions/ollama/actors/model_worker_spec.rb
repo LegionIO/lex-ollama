@@ -43,6 +43,22 @@ RSpec.describe Legion::Extensions::Ollama::Actor::ModelWorker do
     end
   end
 
+  describe '#endpoint_polling?' do
+    it 'defaults to basic_get polling' do
+      worker = worker_class.allocate
+      allow(worker).to receive(:settings).and_return({})
+
+      expect(worker.endpoint_polling?).to be(true)
+    end
+
+    it 'allows subscription scheduler mode for GPU workers' do
+      worker = worker_class.allocate
+      allow(worker).to receive(:settings).and_return({ fleet: { scheduler: :subscription } })
+
+      expect(worker.endpoint_polling?).to be(false)
+    end
+  end
+
   describe '#consumer_priority' do
     context 'when no fleet priority is configured' do
       it 'returns 0' do
@@ -202,23 +218,50 @@ RSpec.describe Legion::Extensions::Ollama::Actor::ModelWorker do
     end
   end
 
-  describe 'routing key convention' do
-    it 'forms the expected routing key for an embed model' do
+  describe '#lane_key' do
+    it 'forms the shared fleet lane key for an embed model' do
+      worker = worker_class.allocate
+      worker.instance_variable_set(:@request_type, 'embed')
+      worker.instance_variable_set(:@model_name, 'nomic-embed-text:latest')
+
+      expect(worker.lane_key).to eq('llm.fleet.embed.nomic-embed-text-latest')
+    end
+
+    it 'forms the shared fleet lane key for inference with context' do
+      worker = worker_class.allocate
+      worker.instance_variable_set(:@request_type, 'chat')
+      worker.instance_variable_set(:@model_name, 'qwen3.5:27b')
+      worker.instance_variable_set(:@context_window, 32_768)
+
+      expect(worker.lane_key).to eq('llm.fleet.inference.qwen3-5-27b.ctx32768')
+    end
+
+    it 'forms an exact offering lane key compatible with legion-llm offering routing' do
+      worker = worker_class.allocate
+      worker.instance_variable_set(:@request_type, 'chat')
+      worker.instance_variable_set(:@model_name, 'qwen3.6:27b')
+      worker.instance_variable_set(:@lane_style, 'offering')
+      worker.instance_variable_set(:@offering_instance_id, 'macbook-m4')
+
+      expect(worker.lane_key).to eq('llm.fleet.offering.macbook-m4.qwen3-6-27b.inference')
+    end
+
+    it 'uses embed as the exact offering operation for embedding workers' do
+      worker = worker_class.allocate
+      worker.instance_variable_set(:@request_type, 'embed')
+      worker.instance_variable_set(:@model_name, 'nomic-embed-text:latest')
+      worker.instance_variable_set(:@lane_style, 'offering')
+      worker.instance_variable_set(:@offering_instance_id, 'gpu-01')
+
+      expect(worker.lane_key).to eq('llm.fleet.offering.gpu-01.nomic-embed-text-latest.embed')
+    end
+
+    it 'aliases routing_key to the selected lane key' do
       worker = worker_class.allocate
       worker.instance_variable_set(:@request_type, 'embed')
       worker.instance_variable_set(:@model_name, 'nomic-embed-text')
-      worker.instance_variable_set(:@context_window, nil)
 
       expect(worker.routing_key).to eq('llm.fleet.embed.nomic-embed-text')
-    end
-
-    it 'includes context windows for inference lanes when known' do
-      worker = worker_class.allocate
-      worker.instance_variable_set(:@request_type, 'chat')
-      worker.instance_variable_set(:@model_name, 'Qwen3.5:27B')
-      worker.instance_variable_set(:@context_window, 32_768)
-
-      expect(worker.routing_key).to eq('llm.fleet.inference.qwen3-5-27b.ctx32768')
     end
 
     it 'collapses repeated punctuation when sanitizing model lane names' do
@@ -229,56 +272,172 @@ RSpec.describe Legion::Extensions::Ollama::Actor::ModelWorker do
 
       expect(worker.routing_key).to eq('llm.fleet.inference.qwen-3-5-27b.ctx32768')
     end
+  end
 
-    describe '#queue' do
-      it 'builds a durable quorum lane queue with expiry, TTL, and backpressure settings' do
-        worker = worker_class.allocate
-        worker.instance_variable_set(:@request_type, 'embed')
-        worker.instance_variable_set(:@model_name, 'nomic-embed-text')
-        allow(worker).to receive(:settings).and_return(
-          {
-            fleet: {
-              queue_expires_ms:        15_000,
-              message_ttl_ms:          5_000,
-              queue_max_length:        25,
-              delivery_limit:          2,
-              consumer_ack_timeout_ms: 60_000
-            }
+  describe '#queue' do
+    it 'builds a durable fleet lane queue bound to the lane routing key' do
+      worker = worker_class.allocate
+      worker.instance_variable_set(:@request_type, 'chat')
+      worker.instance_variable_set(:@model_name, 'qwen3.5:27b')
+      worker.instance_variable_set(:@context_window, 32_768)
+
+      queue_class = worker.queue
+      queue = queue_class.allocate
+
+      expect(queue.queue_name).to eq('llm.fleet.inference.qwen3-5-27b.ctx32768')
+      expect(queue.queue_options[:durable]).to be(true)
+      expect(queue.queue_options[:auto_delete]).to be(false)
+      expect(queue.queue_options[:arguments]['x-queue-type']).to eq('quorum')
+    end
+
+    it 'builds a durable quorum lane queue with expiry, TTL, and backpressure settings' do
+      worker = worker_class.allocate
+      worker.instance_variable_set(:@request_type, 'embed')
+      worker.instance_variable_set(:@model_name, 'nomic-embed-text')
+      allow(worker).to receive(:settings).and_return(
+        {
+          fleet: {
+            queue_expires_ms:        15_000,
+            message_ttl_ms:          5_000,
+            queue_max_length:        25,
+            delivery_limit:          2,
+            consumer_ack_timeout_ms: 60_000
           }
-        )
+        }
+      )
 
-        queue_class = worker.queue
-        queue_instance = queue_class.allocate
-        options = queue_instance.queue_options
+      queue_class = worker.queue
+      queue_instance = queue_class.allocate
+      options = queue_instance.queue_options
 
-        expect(queue_instance.queue_name).to eq('llm.fleet.embed.nomic-embed-text')
-        expect(options[:durable]).to eq(true)
-        expect(options[:auto_delete]).to eq(false)
-        expect(options[:arguments]['x-queue-type']).to eq('quorum')
-        expect(options[:arguments]['x-queue-leader-locator']).to eq('balanced')
-        expect(options[:arguments]['x-expires']).to eq(15_000)
-        expect(options[:arguments]['x-message-ttl']).to eq(5_000)
-        expect(options[:arguments]['x-overflow']).to eq('reject-publish')
-        expect(options[:arguments]['x-max-length']).to eq(25)
-        expect(options[:arguments]['x-delivery-limit']).to eq(2)
-        expect(options[:arguments]['x-consumer-timeout']).to eq(60_000)
-        expect(queue_instance.dlx_enabled).to eq(false)
+      expect(queue_instance.queue_name).to eq('llm.fleet.embed.nomic-embed-text')
+      expect(options[:durable]).to eq(true)
+      expect(options[:auto_delete]).to eq(false)
+      expect(options[:arguments]['x-queue-type']).to eq('quorum')
+      expect(options[:arguments]['x-queue-leader-locator']).to eq('balanced')
+      expect(options[:arguments]['x-expires']).to eq(15_000)
+      expect(options[:arguments]['x-message-ttl']).to eq(5_000)
+      expect(options[:arguments]['x-overflow']).to eq('reject-publish')
+      expect(options[:arguments]['x-max-length']).to eq(25)
+      expect(options[:arguments]['x-delivery-limit']).to eq(2)
+      expect(options[:arguments]['x-consumer-timeout']).to eq(60_000)
+      expect(queue_instance.dlx_enabled).to eq(false)
+    end
+
+    it 'builds the same lane queue class from class-level arguments' do
+      queue_class = worker_class.queue_class_for(
+        request_type:   'chat',
+        model:          'Qwen3.5:27B',
+        context_window: 32_768,
+        queue_config:   { queue_expires_ms: 15_000, message_ttl_ms: 5_000 }
+      )
+      queue_instance = queue_class.allocate
+
+      expect(queue_instance.queue_name).to eq('llm.fleet.inference.qwen3-5-27b.ctx32768')
+      expect(queue_instance.queue_options[:arguments]['x-queue-type']).to eq('quorum')
+      expect(queue_instance.queue_options[:arguments]['x-expires']).to eq(15_000)
+      expect(queue_instance.queue_options[:arguments]['x-message-ttl']).to eq(5_000)
+    end
+
+    it 'builds offering lane queues from class-level arguments when requested' do
+      queue_class = worker_class.queue_class_for(
+        request_type:         'chat',
+        model:                'Qwen3.5:27B',
+        lane_style:           :offering,
+        offering_instance_id: 'macbook-m4',
+        queue_config:         { queue_expires_ms: 15_000 }
+      )
+      queue_instance = queue_class.allocate
+
+      expect(queue_instance.queue_name).to eq('llm.fleet.offering.macbook-m4.qwen3-5-27b.inference')
+      expect(queue_instance.queue_options[:arguments]['x-expires']).to eq(15_000)
+    end
+  end
+
+  describe 'registry events' do
+    let(:worker) do
+      worker_class.allocate.tap do |w|
+        w.instance_variable_set(:@request_type, 'chat')
+        w.instance_variable_set(:@model_name, 'qwen3.5:27b')
+        w.instance_variable_set(:@context_window, 32_768)
+        w.instance_variable_set(:@lane_style, 'offering')
+        w.instance_variable_set(:@offering_instance_id, 'macbook-m4')
       end
+    end
 
-      it 'builds the same lane queue class from class-level arguments' do
-        queue_class = worker_class.queue_class_for(
-          request_type:   'chat',
-          model:          'Qwen3.5:27B',
-          context_window: 32_768,
-          queue_config:   { queue_expires_ms: 15_000, message_ttl_ms: 5_000 }
-        )
-        queue_instance = queue_class.allocate
+    it 'builds lex-llm available envelopes for the worker lane' do
+      event = worker.send(:registry_event_for, :available)
 
-        expect(queue_instance.queue_name).to eq('llm.fleet.inference.qwen3-5-27b.ctx32768')
-        expect(queue_instance.queue_options[:arguments]['x-queue-type']).to eq('quorum')
-        expect(queue_instance.queue_options[:arguments]['x-expires']).to eq(15_000)
-        expect(queue_instance.queue_options[:arguments]['x-message-ttl']).to eq(5_000)
-      end
+      expect(event.to_h).to include(
+        event_type: :offering_available,
+        lane:       'llm.fleet.offering.macbook-m4.qwen3-5-27b.inference',
+        runtime:    { node: 'macbook-m4', scheduler: :basic_get, polling: true },
+        health:     { ready: true, status: :available },
+        metadata:   { extension: :lex_ollama, request_type: 'chat', lane_kind: 'inference' }
+      )
+      expect(event.to_h[:offering]).to include(
+        provider_family:   :ollama,
+        provider_instance: :'macbook-m4',
+        transport:         :rabbitmq,
+        model:             'qwen3.5:27b',
+        usage_type:        :inference,
+        capabilities:      %i[chat],
+        limits:            { context_window: 32_768 }
+      )
+    end
+
+    it 'builds embedding capability envelopes for embed workers' do
+      worker.instance_variable_set(:@request_type, 'embed')
+      worker.instance_variable_set(:@model_name, 'nomic-embed-text')
+
+      event = worker.send(:registry_event_for, :heartbeat)
+
+      expect(event.to_h[:event_type]).to eq(:offering_heartbeat)
+      expect(event.to_h[:offering]).to include(
+        usage_type:   :embedding,
+        capabilities: %i[embedding]
+      )
+    end
+
+    it 'publishes RegistryEvent messages without raising when transport succeeds' do
+      message = instance_double(Legion::Extensions::Ollama::Transport::Messages::RegistryEvent)
+      allow(Legion::Extensions::Ollama::Transport::Messages::RegistryEvent).to receive(:new).and_return(message)
+      allow(message).to receive(:publish).and_return({ accepted: true })
+
+      expect { worker.send(:publish_registry_event, :available) }.not_to raise_error
+      expect(Legion::Extensions::Ollama::Transport::Messages::RegistryEvent).to have_received(:new)
+      expect(message).to have_received(:publish).with(spool: false)
+    end
+
+    it 'swallows registry publish failures so serving is not blocked' do
+      allow(Legion::Extensions::Ollama::Transport::Messages::RegistryEvent)
+        .to receive(:new)
+        .and_raise(StandardError, 'amqp unavailable')
+      allow(worker).to receive(:log_registry_publish_failure)
+
+      expect { worker.send(:publish_registry_event, :available) }.not_to raise_error
+      expect(worker).to have_received(:log_registry_publish_failure)
+    end
+
+    it 'starts heartbeat publishing in a background thread' do
+      thread = instance_double(Thread, alive?: false)
+      allow(Thread).to receive(:new).and_return(thread)
+
+      worker.send(:start_registry_heartbeat)
+
+      expect(Thread).to have_received(:new)
+    end
+
+    it 'marks the heartbeat loop stopped during shutdown' do
+      thread = instance_double(Thread, alive?: true)
+      worker.instance_variable_set(:@registry_heartbeat_running, true)
+      worker.instance_variable_set(:@registry_heartbeat_thread, thread)
+      allow(thread).to receive(:kill)
+
+      worker.send(:stop_registry_heartbeat)
+
+      expect(worker.instance_variable_get(:@registry_heartbeat_running)).to be(false)
+      expect(thread).to have_received(:kill)
     end
   end
 end
